@@ -214,14 +214,15 @@ fn main() -> eframe::Result {
         // windowed *and* when zoomed, with the shadow and the background blur clipped to it —
         // where a borderless window is a plain rectangle that only looks rounded because the
         // app paints it so (and so shows blur and shadow in the square corners behind that).
-        // The app's own window buttons stay; the system's are hidden.
+        // The system's own traffic lights stay, moved down into the top-left corner of the shell
+        // each frame (`chrome::TrafficLights`); the app draws no window buttons of its own here.
         #[cfg(target_os = "macos")]
         {
             viewport = viewport
                 .with_fullsize_content_view(true)
                 .with_titlebar_shown(false)
                 .with_title_shown(false)
-                .with_titlebar_buttons_shown(false);
+                .with_titlebar_buttons_shown(true);
         }
         #[cfg(not(target_os = "macos"))]
         {

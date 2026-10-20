@@ -12,6 +12,7 @@
 use egui::{Rect, Sense, vec2};
 
 use crate::app::{App, Route};
+use crate::chrome;
 use crate::icons::Icon;
 use crate::theme;
 use crate::ui::{ROW_ART_PT, art_texture, virtual_rows};
@@ -34,7 +35,21 @@ pub fn sidebar(app: &mut App, ui: &mut egui::Ui) {
             .show(ui, |ui| audio_warning(app, ui, rail));
     }
 
-    ui.add_space(8.0);
+    app.sidebar_rail = rail;
+    if app.traffic_lights_shown {
+        // macOS: the traffic lights sit in the card's top-left corner, centred on the top bar
+        // (`App::place_traffic_lights`). The strip they sit in drags the window like a title
+        // bar, and the nav starts below it, level with the top of the page card. Fullscreen
+        // hides the lights, and the nav takes the corner back.
+        let band = Rect::from_min_max(
+            card.left_top(),
+            egui::pos2(card.right(), theme::TITLEBAR_HEIGHT),
+        );
+        chrome::drag_surface(ui, band, app.decorated, "sidebar");
+        ui.add_space((theme::TITLEBAR_HEIGHT - ui.cursor().top()).max(8.0));
+    } else {
+        ui.add_space(8.0);
+    }
     for (route, icon, label) in [
         (Route::Home, Icon::House, "Home"),
         // Explore rather than Search: searching happens in the field at the top of the window,

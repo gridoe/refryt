@@ -29,8 +29,9 @@ pub(crate) fn screen(app: &mut App, ui: &mut Ui, maximized: bool) {
 
     // Installed first, exactly as the top bar does it, so the window buttons painted after win
     // the pointer instead of the drag surface swallowing their clicks.
-    chrome::drag_surface(ui, rect, app.decorated);
-    if !app.decorated {
+    chrome::drag_surface(ui, rect, app.decorated, "splash");
+    // macOS keeps the system's traffic lights, placed for every frame in `App::ui`.
+    if !app.decorated && !chrome::NATIVE_WINDOW_BUTTONS {
         // The shell's top bar sits inside its frame's `GUTTER + 6` inner margin, so its window
         // buttons are that far in from the window edge; insetting the strip by the same amount
         // keeps them from jumping sideways when the splash hands off to the shell.

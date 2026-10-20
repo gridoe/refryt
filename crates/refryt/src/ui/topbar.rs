@@ -4,7 +4,8 @@
 //! the sidebar from reaching the top edge. It is now a panel claimed *after* the sidebar, so the
 //! rail runs the whole left side and this bar starts where the rail ends.
 //!
-//! It also carries the window buttons. That is the one place this shell departs from the
+//! It also carries the window buttons (everywhere but macOS, whose traffic lights sit top-left
+//! over the sidebar). That is the one place this shell departs from the
 //! reference, where the queue panel runs full height and the top bar covers only the content:
 //! minimise / maximise / close have to sit at the window's top-right corner and must not move
 //! when the queue opens, and letting this bar run to the window's right edge is what keeps them
@@ -36,7 +37,7 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
     let rect = ui.available_rect_before_wrap();
 
     // The drag surface goes down first so every control painted after it wins the pointer.
-    chrome::drag_surface(ui, rect, app.decorated);
+    chrome::drag_surface(ui, rect, app.decorated, "topbar");
 
     // The right-hand controls go down *first*, so the search can size itself to whatever is left
     // of the bar instead of running under them when the window is dragged narrow.
@@ -45,7 +46,9 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
             .max_rect(rect)
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    if !app.decorated {
+    // On macOS the window buttons are the system's traffic lights, at the other end of the
+    // window over the sidebar (`chrome::TrafficLights`).
+    if !app.decorated && !chrome::NATIVE_WINDOW_BUTTONS {
         let close_clicked = chrome::window_buttons(&mut right, &p);
         if close_clicked {
             app.request_close(ui.ctx());

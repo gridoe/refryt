@@ -1730,6 +1730,16 @@ pub struct App {
     /// non-Linux build — and the Settings row for it disables itself off that rather than
     /// offering a switch that does nothing.
     pub(crate) blur: crate::blur::Blur,
+    /// macOS: the system's window buttons, kept in the shell's top-left corner. A no-op
+    /// elsewhere.
+    traffic_lights: crate::chrome::TrafficLights,
+    /// Whether the sidebar was drawn folded to the icon rail last frame, for placing the traffic
+    /// lights over it.
+    pub(crate) sidebar_rail: bool,
+    /// Whether the traffic lights are on screen this frame (macOS, windowed or zoomed), so the
+    /// sidebar keeps their corner clear. False in fullscreen, where the system hides them and the
+    /// corner goes back to the nav.
+    pub(crate) traffic_lights_shown: bool,
     /// OS media controls and media keys, when the platform offers them. `None` on a session with
     /// no media service (e.g. no D-Bus session bus); the app runs the same without it.
     pub(crate) media: Option<crate::media::Media>,
@@ -1889,6 +1899,9 @@ impl App {
         let palette = settings.palette(&cc.egui_ctx, &custom_themes);
         theme::apply(&cc.egui_ctx, &palette);
         let blur = crate::blur::Blur::new(cc);
+        let traffic_lights = crate::chrome::TrafficLights::new(cc);
+        // Until the sidebar is first drawn (the splash comes first), from its saved width.
+        let sidebar_rail = settings.sidebar_width.is_some_and(theme::sidebar_is_rail);
 
         let backend = Backend::new(cc.egui_ctx.clone())?;
         backend.set_audio_quality(settings.quality.format());
@@ -2108,6 +2121,9 @@ impl App {
             screenshot: screenshot.map(|(path, when)| (path, when, false)),
             content_rect: egui::Rect::NOTHING,
             blur,
+            traffic_lights,
+            sidebar_rail,
+            traffic_lights_shown: false,
             media,
             discord: None,
             presence_key: None,
@@ -2192,8 +2208,21 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
             self.skip(1);
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::M)) {
+        if ctx.input(|i| i.modifiers.is_none() && i.key_pressed(egui::Key::M)) {
             self.toggle_mute();
+        }
+        // The window shortcuts every Mac app answers to: Cmd+M minimises, Cmd+W closes (or hides
+        // to the tray, as the red button does). Cmd+Q is the system's own app menu.
+        #[cfg(target_os = "macos")]
+        {
+            let command = |key| ctx.input(|i| i.modifiers.command_only() && i.key_pressed(key));
+            if command(egui::Key::M) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                crate::pacing::minimize_requested();
+            }
+            if command(egui::Key::W) {
+                self.request_close(ctx);
+            }
         }
         // The fullscreen view: F opens and closes it, Escape closes the queue drawer and then
         // the view.
@@ -2411,6 +2440,26 @@ impl App {
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+    }
+
+    /// macOS: keep the system's window buttons in the sidebar card's top-left corner, centred on
+    /// the top bar — inset from the card's edge when the sidebar is wide, centred over the icon
+    /// rail when it is folded. Hidden while the window is fullscreen or the fullscreen player is
+    /// up, which have no corner for them. A no-op elsewhere and with `--decorated`.
+    fn place_traffic_lights(&mut self, fullscreen: bool) {
+        self.traffic_lights_shown = chrome::NATIVE_WINDOW_BUTTONS && !self.decorated && !fullscreen;
+        if self.decorated {
+            return;
+        }
+        let left = if self.sidebar_rail {
+            theme::GUTTER
+                + ((theme::SIDEBAR_RAIL - theme::GUTTER - chrome::TrafficLights::WIDTH) / 2.0)
+                    .max(0.0)
+        } else {
+            theme::GUTTER + 12.0
+        };
+        self.traffic_lights
+            .place(left, theme::TITLEBAR_HEIGHT / 2.0, !fullscreen);
     }
 
     /// Bring the window back from hidden or minimized, best-effort. Shared by the tray's Show,
@@ -7427,6 +7476,7 @@ impl eframe::App for App {
             && !cfg!(target_os = "windows")
             && !cfg!(target_os = "macos");
         let p = self.palette;
+        self.place_traffic_lights(fullscreen || self.fs.open);
 
         chrome::paint_background(ui, &p, rounded);
 
