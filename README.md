@@ -148,7 +148,11 @@ To build any of these from source, see [Build from source](#build-from-source).
 When refryt starts, it asks GitHub for the latest release. If that release is newer, refryt offers it. Nothing is installed until you click, and you can turn the check off, or run it yourself, in Settings, About.
 
 - The Windows setup and MSI, and the AppImage, update themselves. **Update and restart** downloads the new file and checks it against the release's `SHA256SUMS`. On Windows, refryt then closes, runs the installer and starts again. Windows may ask for permission. The AppImage replaces itself and restarts.
-- The Flatpak, the macOS image, the Windows zip, Homebrew, Scoop and the AUR package only show that a new version is out, with a link to the release. Update those the way you installed them: the Flatpak with `flatpak update`.
+- The Flatpak, Homebrew and Scoop only show that a new version is out, with the command that updates them, since their package manager does the update:
+  - Flatpak: `flatpak update`, or a software centre.
+  - Homebrew: `brew upgrade --cask refryt`.
+  - Scoop: `scoop update refryt`.
+- The macOS disk image, the Windows zip and the AUR package show that a new version is out, with a link to the release. Update those the way you installed them.
 
 ## Disclaimer
 
