@@ -30,7 +30,7 @@ Open a [feature request](https://github.com/gridoe/refryt/issues/new?template=fe
 ## Pull requests
 
 - Keep each pull request to one change.
-- `just check` has to pass. It runs `cargo fmt --check`, clippy with `-D warnings` for both resolver feature sets, and the tests. There is no CI, so this is the same gate a release goes through.
+- `just check` has to pass. It runs `cargo fmt --check`, clippy with `-D warnings` for both resolver feature sets, and the tests, the same gate a release goes through. CI runs these checks on every pull request on Linux, along with clippy for Windows and clippy and the tests on macOS, so code for a platform you cannot build on is still checked.
 - Follow the style of the code around the change, including how much it is commented.
 - For a change to the interface, add a screenshot from before and after.
 
