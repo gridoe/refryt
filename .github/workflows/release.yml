@@ -4,6 +4,9 @@ name: Release
 # GitHub release with its checksums. Running it by hand (Actions > Release > Run workflow) does
 # everything except the publishing, so a change to the scripts or this file can be tried first,
 # and a branch that is not released yet gets installers to test (release.sh verify --test-build).
+# A hand run can build one platform only, for a fix that touches only that one:
+#
+#   gh workflow run release.yml --ref <branch> -f platforms=windows
 #
 # The scripts are the ones used on a developer machine; this file only installs what they need.
 #
@@ -15,6 +18,12 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: What to build. The release checks over every file run only with all.
+        type: choice
+        default: all
+        options: [all, windows, macos, linux]
 
 permissions:
   contents: read
@@ -72,6 +81,7 @@ jobs:
 
   windows:
     needs: check
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'windows'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -156,6 +166,7 @@ jobs:
   # libgstreamer, on Arch). Arch is where it is built by hand, and it is a rolling release.
   appimage:
     needs: check
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'linux'
     runs-on: ubuntu-24.04
     container:
       image: archlinux:latest
@@ -180,6 +191,7 @@ jobs:
 
   flatpak:
     needs: check
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'linux'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -226,6 +238,7 @@ jobs:
 
   macos:
     needs: check
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'macos'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -256,6 +269,7 @@ jobs:
   # The same checks as a local release, over everything the jobs above built.
   verify:
     needs: [check, windows, appimage, flatpak, macos]
+    if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
