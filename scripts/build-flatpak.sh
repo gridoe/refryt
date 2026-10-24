@@ -38,9 +38,22 @@ echo "fetching yt-dlp"
 curl -fsSL -o "$dir/yt-dlp" \
     https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
 
+# With the signing key (CI imports it with scripts/import-flatpak-key.sh), the commit is signed
+# and the bundle names the hosted repo (.github/workflows/flatpak-repo.yml) and its key, so an
+# install from the file gets its updates from there with `flatpak update`. Flatpak refuses such
+# a bundle unless its commit is signed, so without the key the bundle is a plain one, as before.
+sign_args=()
+bundle_args=()
+if [ -n "${FLATPAK_GPG_KEY_ID:-}" ]; then
+    sign_args=(--gpg-sign="$FLATPAK_GPG_KEY_ID" --gpg-homedir="$FLATPAK_GPG_HOMEDIR")
+    bundle_args=(--repo-url=https://gridoe.github.io/refryt/repo
+        --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
+        --gpg-keys="$dir/refryt.gpg")
+fi
+
 mkdir -p dist
-"${builder[@]}" --force-clean --user --disable-rofiles-fuse \
+"${builder[@]}" --force-clean --user --disable-rofiles-fuse "${sign_args[@]}" \
     --state-dir="$dir/.flatpak-builder" \
     --repo="$dir/repo" "$dir/build-dir" "$dir/$id.yml"
-flatpak build-bundle "$dir/repo" "$out" "$id"
+flatpak build-bundle "${bundle_args[@]}" "$dir/repo" "$out" "$id"
 echo "built $out ($(du -h "$out" | cut -f1))"

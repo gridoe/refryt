@@ -1,0 +1,10 @@
+[Flatpak Ref]
+Name=io.github.gridoe.refryt
+Branch=master
+Title=Refryt
+Url=https://gridoe.github.io/refryt/repo
+SuggestRemoteName=refryt
+Homepage=https://github.com/gridoe/refryt
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+IsRuntime=false
+GPGKey=@GPGKEY@

@@ -86,11 +86,20 @@ From a source checkout, `./scripts/appimage-install.sh install` copies the AppIm
 
 #### Flatpak
 
-Refryt is coming to Flathub soon. Until then, the Flatpak is installed from the file:
+Install it from the refryt Flatpak repo:
 
-1. Download `refryt-<version>-x86_64.flatpak`.
-2. Run `flatpak install --user refryt-<version>-x86_64.flatpak`. Flatpak offers to fetch the GNOME 51 runtime the first time.
-3. Start it with `flatpak run io.github.gridoe.refryt`.
+```
+flatpak install --user https://gridoe.github.io/refryt/refryt.flatpakref
+```
+
+Flatpak offers to fetch the GNOME 51 runtime from Flathub the first time. Start it from the app menu or with `flatpak run io.github.gridoe.refryt`. Updates then come with `flatpak update` or a software centre such as GNOME Software or Discover.
+
+Each release also has the file, `refryt-<version>-x86_64.flatpak`, for `flatpak install --user <file>`. From 0.1.15 an install from the file updates from the same repo. An install from an older file moves over with these two commands, keeping its settings and sign-in:
+
+```
+flatpak remote-add --user --if-not-exists refryt https://gridoe.github.io/refryt/refryt.flatpakrepo
+flatpak install --user --reinstall refryt io.github.gridoe.refryt
+```
 
 mpv and yt-dlp are included. Inside the sandbox the browser import and the Launch on startup setting are hidden, because neither can work there.
 
@@ -139,7 +148,7 @@ To build any of these from source, see [Build from source](#build-from-source).
 When refryt starts, it asks GitHub for the latest release. If that release is newer, refryt offers it. Nothing is installed until you click, and you can turn the check off, or run it yourself, in Settings, About.
 
 - The Windows setup and MSI, and the AppImage, update themselves. **Update and restart** downloads the new file and checks it against the release's `SHA256SUMS`. On Windows, refryt then closes, runs the installer and starts again. Windows may ask for permission. The AppImage replaces itself and restarts.
-- The Flatpak, the macOS image, the Windows zip, Homebrew, Scoop and the AUR package only show that a new version is out, with a link to the release. Update those the way you installed them.
+- The Flatpak, the macOS image, the Windows zip, Homebrew, Scoop and the AUR package only show that a new version is out, with a link to the release. Update those the way you installed them: the Flatpak with `flatpak update`.
 
 ## Disclaimer
 
@@ -198,7 +207,7 @@ Settings has a transparency slider and a background blur switch. Blur depends on
 
 ### Signing in
 
-The app can sign in from its own window on Linux, Windows and macOS. It can also use the session of a browser that is already signed in: Chrome, Chromium, Firefox, Brave, Vivaldi or Edge. On Windows only Firefox is offered, because the other browsers encrypt their cookies in a way other programs cannot read. The Flatpak cannot see browser profiles, so it hides the browser option and signs in through the app's own window. A third option on Settings' Account tab is pasting the cookie request header copied from a browser's developer tools, for when neither of the other two can be used.
+The app can sign in from its own window on Linux, Windows and macOS. It can also use the session of a browser that is already signed in: Import from browser on Home or in Settings picks the browser used most recently, with a menu when there are several. It knows Firefox and its forks (Zen, LibreWolf, Floorp, Waterfox), Chrome, Chromium, Brave, Vivaldi, Edge, Opera, Whale and Helium, including Flatpak and Snap installs on Linux. On Windows, Chromium browsers that use app-bound encryption for their cookies are left out, since other programs cannot read those. The Flatpak cannot see browser profiles, so it hides the browser option and signs in through the app's own window. A third option on Settings' Account tab is pasting the cookie request header copied from a browser's developer tools, for when neither of the other two can be used.
 
 Signed out, the app still searches and plays. It has no library.
 

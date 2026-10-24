@@ -193,6 +193,8 @@ jobs:
     needs: check
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || inputs.platforms == 'linux'
     runs-on: ubuntu-24.04
+    env:
+      FLATPAK_GPG_KEY: ${{ secrets.FLATPAK_GPG_KEY }}
     steps:
       - uses: actions/checkout@v4
       # flatpak-builder is built from its release, not taken from Ubuntu: Ubuntu 24.04's 1.4.2
@@ -227,6 +229,11 @@ jobs:
           path: packaging/flatpak/.flatpak-builder
           key: flatpak-builder-${{ hashFiles('packaging/flatpak/io.github.gridoe.refryt.yml') }}
           restore-keys: flatpak-builder-
+      # With the key, the bundle is signed and linked to the hosted repo (see build-flatpak.sh);
+      # a fork without the secret builds a plain one.
+      - name: Import the signing key
+        if: env.FLATPAK_GPG_KEY != ''
+        run: scripts/import-flatpak-key.sh >> "$GITHUB_ENV"
       - name: Build the bundle
         run: ./scripts/build-flatpak.sh
       - uses: actions/upload-artifact@v4
@@ -292,6 +299,9 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      # To start flatpak-repo.yml: a release made with this token sends no event other
+      # workflows can start on, but a dispatch is allowed.
+      actions: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -312,3 +322,6 @@ jobs:
             --title "refryt $VERSION" --notes-file "release-notes/$VERSION.md" \
             --verify-tag --draft
           gh release edit "v$VERSION" --draft=false
+      # Run on main, which the github-pages environment deploys from.
+      - name: Update the Flatpak repo
+        run: gh workflow run flatpak-repo.yml -R "$GITHUB_REPOSITORY" --ref main -f version="${{ needs.check.outputs.version }}"

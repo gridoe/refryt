@@ -1,0 +1,6 @@
+[Flatpak Repo]
+Title=Refryt
+Url=https://gridoe.github.io/refryt/repo
+Homepage=https://github.com/gridoe/refryt
+Comment=Lightweight YouTube Music client
+GPGKey=@GPGKEY@

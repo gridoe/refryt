@@ -83,7 +83,7 @@ impl Install {
 
 fn manual_hint() -> &'static str {
     if crate::flatpak::sandboxed() {
-        "Download the new .flatpak from the release page and install it the same way as before."
+        "Run `flatpak update`, or update refryt from your software centre."
     } else if cfg!(target_os = "macos") {
         "Download the new disk image from the release page and drag Refryt to Applications again."
     } else if cfg!(target_os = "windows") {
