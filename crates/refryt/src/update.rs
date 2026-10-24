@@ -7,7 +7,8 @@
 //!   `SHA256SUMS`, and run it once the app has closed; the installer is followed by the new
 //!   version starting.
 //! - The AppImage downloads its successor beside itself, checks it, swaps it in and restarts.
-//! - Everything else only says that a new version exists and links the release: a Flatpak should
+//! - Everything else only says that a new version exists and links the release, naming the
+//!   command for a package manager's install (Flatpak, Homebrew, Scoop): a Flatpak should
 //!   not replace itself from inside its sandbox, an unnotarised macOS bundle that rewrites itself
 //!   trips Gatekeeper, and the Windows zip and a build from source have no installer to run.
 //!
@@ -83,14 +84,58 @@ impl Install {
 
 fn manual_hint() -> &'static str {
     if crate::flatpak::sandboxed() {
-        "Run `flatpak update`, or update refryt from your software centre."
+        "Run \"flatpak update\", or update refryt from your software centre."
     } else if cfg!(target_os = "macos") {
-        "Download the new disk image from the release page and drag Refryt to Applications again."
+        if homebrew_cask() {
+            "Run \"brew upgrade --cask refryt\"."
+        } else {
+            "Download the new disk image from the release page and drag Refryt to Applications \
+             again."
+        }
     } else if cfg!(target_os = "windows") {
-        "Download the new zip from the release page and unpack it over this copy."
+        let scoop = std::env::current_exe().is_ok_and(|exe| scoop_app(&exe));
+        if scoop {
+            "Run \"scoop update refryt\"."
+        } else {
+            "Download the new zip from the release page and unpack it over this copy."
+        }
     } else {
         "Get it from the release page, or update refryt the way you installed it."
     }
+}
+
+/// Whether the exe is one Scoop installed: Scoop keeps apps in `<root>\apps\<app>\…`, with the
+/// root at `%USERPROFILE%\scoop`, `C:\ProgramData\scoop` or wherever `SCOOP` points. Unpacking
+/// a zip over it by hand would leave Scoop's record of the version behind.
+fn scoop_app(exe: &Path) -> bool {
+    let named = |dir: Option<&Path>, name: &str| {
+        dir.and_then(Path::file_name)
+            .is_some_and(|n| n.eq_ignore_ascii_case(name))
+    };
+    let custom_roots: Vec<PathBuf> = ["SCOOP", "SCOOP_GLOBAL"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .collect();
+    exe.ancestors().any(|dir| {
+        named(Some(dir), "apps")
+            && (named(dir.parent(), "scoop")
+                || dir
+                    .parent()
+                    .is_some_and(|root| custom_roots.iter().any(|r| r == root)))
+    })
+}
+
+/// Whether Homebrew installed this copy as a cask: it keeps a record of each cask under
+/// `<prefix>/Caskroom/<name>`, and the app itself in /Applications like the disk image would.
+fn homebrew_cask() -> bool {
+    let prefixes = std::env::var_os("HOMEBREW_PREFIX")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(["/opt/homebrew", "/usr/local"].map(PathBuf::from));
+    prefixes
+        .into_iter()
+        .any(|prefix| prefix.join("Caskroom/refryt").is_dir())
 }
 
 #[cfg(target_os = "windows")]
@@ -508,6 +553,22 @@ fn spawn(pending: Pending) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scoop's per-user and global roots both count, whatever their case; a zip unpacked
+    /// somewhere else, or a folder merely called "apps", does not.
+    #[test]
+    fn a_scoop_install_is_told_from_its_path() {
+        assert!(scoop_app(Path::new(
+            "/Users/me/scoop/apps/refryt/current/refryt.exe"
+        )));
+        assert!(scoop_app(Path::new(
+            "/ProgramData/Scoop/Apps/refryt/0.1.14/refryt.exe"
+        )));
+        assert!(!scoop_app(Path::new(
+            "/Users/me/Downloads/refryt/refryt.exe"
+        )));
+        assert!(!scoop_app(Path::new("/Users/me/apps/refryt/refryt.exe")));
+    }
 
     fn release(tag: &str, assets: &[&str]) -> GhRelease {
         GhRelease {
