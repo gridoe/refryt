@@ -184,7 +184,21 @@ fn icon_rgba() -> Option<(Vec<u8>, u32, u32)> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn icon() -> Option<tray_icon::Icon> {
+fn icon(ctx: &egui::Context) -> Option<tray_icon::Icon> {
+    // Windows: the .exe's own icon resource (`refryt.rc`'s `1 ICON`, `refryt.ico` with 16 to
+    // 256 px drawn), loaded at the tray's size. Handed the 256 px PNG instead, the shell shrank
+    // it to 16-32 px itself, and the result was pixelated. 16 px is the tray's size at 100%
+    // scaling; Windows picks the nearest drawn size and scales it well from there.
+    #[cfg(target_os = "windows")]
+    {
+        let size = (16.0 * ctx.pixels_per_point()).round() as u32;
+        match tray_icon::Icon::from_resource(1, Some((size, size))) {
+            Ok(icon) => return Some(icon),
+            Err(e) => tracing::warn!(%e, "tray: no icon resource, using the PNG"),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = ctx;
     let (rgba, width, height) = icon_rgba()?;
     tray_icon::Icon::from_rgba(rgba, width, height).ok()
 }
@@ -230,7 +244,7 @@ pub fn spawn(ctx: &egui::Context) -> Tray {
     // Installed even if the icon itself never gets built: the handlers are what wake the UI,
     // and they are harmless with no icon to click.
     install_handlers(ctx);
-    let icon = icon().and_then(|icon| {
+    let icon = icon(ctx).and_then(|icon| {
         let builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu()))
             .with_icon(icon)
