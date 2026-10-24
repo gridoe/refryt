@@ -17,6 +17,9 @@
 //! `$XDG_RUNTIME_DIR`. `$TMPDIR` is private to the user and short enough for a socket path, which
 //! has a length limit of about 100 bytes.
 //!
+//! On Windows a named mutex is the claim and a named event the request: the second launch raises
+//! the window itself, then sets the event so the running instance knows it is shown.
+//!
 //! Failure to set any of this up is never fatal: the app then runs without a guard rather than
 //! refusing to start.
 
@@ -316,9 +319,14 @@ mod windows {
     use std::os::windows::ffi::OsStrExt as _;
     use std::ptr;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError};
-    use windows_sys::Win32::System::Threading::CreateMutexW;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Threading::{
+        CreateEventW, CreateMutexW, INFINITE, SetEvent, WaitForSingleObject,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, SW_RESTORE, SetForegroundWindow, ShowWindow,
     };
@@ -327,6 +335,12 @@ mod windows {
 
     /// The mutex handle, for the process lifetime. The OS releases it when the process ends.
     static MUTEX: Mutex<Option<isize>> = Mutex::new(None);
+
+    /// The event a second launch sets once it has raised the window, same scope as the mutex.
+    const SHOW_EVENT: &str = "Local\\refryt-show";
+
+    /// Set by the event's waiter thread, drained by [`poll`].
+    static SHOW: AtomicBool = AtomicBool::new(false);
 
     fn wide(s: &str) -> Vec<u16> {
         OsStr::new(s).encode_wide().chain(Some(0)).collect()
@@ -350,8 +364,14 @@ mod windows {
         Claim::Primary
     }
 
-    /// Ask the running instance's window to come forward. Finding it by its fixed title is the
-    /// whole handshake: there is no socket to speak over, and the window title never changes.
+    /// Ask the running instance's window to come forward. Finding it by its fixed title is how
+    /// the window is reached: the window title never changes.
+    ///
+    /// This process raises the window itself, because the launch the user just made is what
+    /// holds the right to take the foreground; the running instance may not get it. Then it sets
+    /// [`SHOW_EVENT`] so the running instance takes the show through `App::show_window` as well.
+    /// Without that, winit still records the window as hidden and the app still thinks it is in
+    /// the tray, so the next titlebar X sends a hide winit sees as no change, and nothing happens.
     fn show_existing() {
         let title = wide("Refryt");
         let hwnd = unsafe { FindWindowW(ptr::null(), title.as_ptr()) };
@@ -361,14 +381,36 @@ mod windows {
                 SetForegroundWindow(hwnd);
             }
         }
+        let name = wide(SHOW_EVENT);
+        let event = unsafe { CreateEventW(ptr::null(), 0, 0, name.as_ptr()) };
+        if event != 0 {
+            unsafe {
+                SetEvent(event);
+                CloseHandle(event);
+            }
+        }
     }
 
-    /// Nothing to install: the second launch raised the window itself.
-    pub fn attach(_ctx: &egui::Context) {}
+    /// Wait on [`SHOW_EVENT`] in a thread of its own, flag each set for [`poll`] and wake the UI.
+    /// Auto-reset, so each second launch is one show. The handle lives as long as the process.
+    pub fn attach(ctx: &egui::Context) {
+        let name = wide(SHOW_EVENT);
+        let event = unsafe { CreateEventW(ptr::null(), 0, 0, name.as_ptr()) };
+        if event == 0 {
+            return;
+        }
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            while unsafe { WaitForSingleObject(event, INFINITE) } == WAIT_OBJECT_0 {
+                SHOW.store(true, Ordering::SeqCst);
+                ctx.request_repaint();
+            }
+        });
+    }
 
-    /// Nothing to drain: the second launch raised the window itself.
+    /// Whether a second launch showed the window, drained once a frame.
     pub fn poll() -> bool {
-        false
+        SHOW.swap(false, Ordering::SeqCst)
     }
 }
 
