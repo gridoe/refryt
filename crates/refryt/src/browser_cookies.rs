@@ -30,8 +30,6 @@ enum Engine {
     /// Chrome and everything built on Chromium: SQLite with values sealed by a key from the OS
     /// keyring, `Cookies` in each profile.
     Chromium,
-    /// Safari, on macOS: one `Cookies.binarycookies` in its container.
-    Safari,
 }
 
 /// A browser found on this machine that `yt-dlp` can read cookies from.
@@ -210,12 +208,8 @@ const KNOWN: &[Known] = &[
             "AppData/Local/imput/Helium/User Data",
         ],
     },
-    Known {
-        label: "Safari",
-        name: "safari",
-        engine: Engine::Safari,
-        roots: &["Library/Containers/com.apple.Safari"],
-    },
+    // No Safari: macOS keeps its cookies behind Full Disk Access, which is more than people want
+    // to grant for a sign-in. Without it the import can only fail.
 ];
 
 fn home() -> Option<PathBuf> {
@@ -232,11 +226,11 @@ fn home() -> Option<PathBuf> {
 /// Chromium (Helium does not, for one), so it is read from the install: a sealed one keeps an
 /// `app_bound_encrypted_key` beside the plain `encrypted_key` in `Local State`. No `Local State`
 /// means no key yt-dlp could use either. Firefox-based browsers have no such scheme, and are
-/// offered everywhere. Safari is macOS only.
+/// offered everywhere.
 ///
 /// On macOS Chromium browsers keep their cookie key in the login Keychain. The first import makes
 /// macOS ask for permission to read it, so a password prompt there is expected, not a fault.
-fn readable_on(engine: Engine, root: &Path, windows: bool, macos: bool) -> bool {
+fn readable_on(engine: Engine, root: &Path, windows: bool) -> bool {
     match engine {
         Engine::Firefox => true,
         Engine::Chromium => {
@@ -244,7 +238,6 @@ fn readable_on(engine: Engine, root: &Path, windows: bool, macos: bool) -> bool 
                 || std::fs::read_to_string(root.join("Local State"))
                     .is_ok_and(|state| !state.contains("\"app_bound_encrypted_key\""))
         }
-        Engine::Safari => macos,
     }
 }
 
@@ -276,10 +269,6 @@ fn cookies_used(root: &Path, engine: Engine) -> Option<SystemTime> {
             .chain([root.join("Network").join("Cookies"), root.join("Cookies")])
             .filter_map(mtime)
             .max(),
-        // Without Full Disk Access the container cannot be read, which says nothing about
-        // whether Safari is signed in: found, with no time to sort it by.
-        Engine::Safari => mtime(root.join("Data/Library/Cookies/Cookies.binarycookies"))
-            .or(Some(SystemTime::UNIX_EPOCH)),
     }
 }
 
@@ -292,26 +281,23 @@ fn cookies_used(root: &Path, engine: Engine) -> Option<SystemTime> {
 /// pretending to know.
 pub fn detected() -> Vec<Browser> {
     match home() {
-        Some(home) => detected_in(&home, cfg!(windows), cfg!(target_os = "macos")),
+        Some(home) => detected_in(&home, cfg!(windows)),
         None => Vec::new(),
     }
 }
 
-fn detected_in(home: &Path, windows: bool, macos: bool) -> Vec<Browser> {
+fn detected_in(home: &Path, windows: bool) -> Vec<Browser> {
     let mut found: Vec<Browser> = Vec::new();
     for known in KNOWN {
         for root in known.roots {
             let root = home.join(root);
-            if !root.is_dir() || !readable_on(known.engine, &root, windows, macos) {
+            if !root.is_dir() || !readable_on(known.engine, &root, windows) {
                 continue;
             }
             let Some(used) = cookies_used(&root, known.engine) else {
                 continue;
             };
-            let arg = match known.engine {
-                Engine::Safari => known.name.to_owned(),
-                _ => format!("{}:{}", known.name, root.display()),
-            };
+            let arg = format!("{}:{}", known.name, root.display());
             let browser = Browser {
                 label: known.label,
                 arg,
@@ -528,7 +514,7 @@ music.youtube.com\tFALSE\t/\tTRUE\t1799999999\twide\t1
                 (".config/vivaldi/Default/Preferences", 1),
             ],
         );
-        let found = detected_in(&home, false, false);
+        let found = detected_in(&home, false);
         assert_eq!(labels(&found), ["Zen", "Chrome", "Firefox"]);
         assert_eq!(
             found[0].arg,
@@ -554,7 +540,7 @@ music.youtube.com\tFALSE\t/\tTRUE\t1799999999\twide\t1
                 ),
             ],
         );
-        let found = detected_in(&home, false, false);
+        let found = detected_in(&home, false);
         assert_eq!(labels(&found), ["Chrome"]);
         assert!(
             found[0].arg.contains(".var/app/com.google.Chrome"),
@@ -597,7 +583,7 @@ music.youtube.com\tFALSE\t/\tTRUE\t1799999999\twide\t1
             r#"{"os_crypt":{"app_bound_encrypted_key":"x","encrypted_key":"y"}}"#,
         );
         // Vivaldi has no `Local State` at all: no key, nothing yt-dlp could decrypt with.
-        let found = detected_in(&home, true, false);
+        let found = detected_in(&home, true);
         assert_eq!(labels(&found), ["Helium"]);
         assert_eq!(
             found[0].arg,
@@ -609,14 +595,13 @@ music.youtube.com\tFALSE\t/\tTRUE\t1799999999\twide\t1
         assert_eq!(label_for(&found[0].arg), "Helium");
         // Elsewhere the key comes from the keyring, so `Local State` decides nothing.
         assert_eq!(
-            labels(&detected_in(&home, false, false)),
+            labels(&detected_in(&home, false)),
             ["Helium", "Edge", "Vivaldi"]
         );
         let _ = std::fs::remove_dir_all(&home);
     }
 
     /// Windows: no Chromium browser that seals its store (this Chrome has no `Local State`).
-    /// Safari only on macOS.
     #[test]
     fn each_os_offers_only_what_it_can_read() {
         let home = home_with(
@@ -630,32 +615,31 @@ music.youtube.com\tFALSE\t/\tTRUE\t1799999999\twide\t1
                     "AppData/Local/Google/Chrome/User Data/Default/Network/Cookies",
                     5,
                 ),
+            ],
+        );
+        assert_eq!(labels(&detected_in(&home, true)), ["Firefox"]);
+        assert_eq!(labels(&detected_in(&home, false)), ["Chrome", "Firefox"]);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// macOS: no Helium, whose Keychain item yt-dlp does not know, and no Safari, whose cookies
+    /// sit behind Full Disk Access.
+    #[test]
+    fn macos_offers_neither_helium_nor_safari() {
+        let home = home_with(
+            "macos",
+            &[
                 (
-                    "Library/Containers/com.apple.Safari/Data/Library/Cookies/x",
+                    "Library/Application Support/net.imput.helium/Default/Cookies",
+                    5,
+                ),
+                (
+                    "Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies",
                     5,
                 ),
             ],
         );
-        assert_eq!(labels(&detected_in(&home, true, false)), ["Firefox"]);
-        assert_eq!(
-            labels(&detected_in(&home, false, false)),
-            ["Chrome", "Firefox"]
-        );
-        assert!(labels(&detected_in(&home, false, true)).contains(&"Safari"));
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    /// macOS: no Helium, whose Keychain item yt-dlp does not know.
-    #[test]
-    fn macos_does_not_offer_helium() {
-        let home = home_with(
-            "helium-macos",
-            &[(
-                "Library/Application Support/net.imput.helium/Default/Cookies",
-                5,
-            )],
-        );
-        assert!(labels(&detected_in(&home, false, true)).is_empty());
+        assert!(labels(&detected_in(&home, false)).is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
 

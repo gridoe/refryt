@@ -827,11 +827,7 @@ fn browser_import(app: &mut App, ui: &mut egui::Ui, g: &mut widgets::Group) {
     // nor seal it, and the sealed Chromium ones are not shown on Windows at all (see
     // `browser_cookies::readable_on`). A Chromium one that is shown there, Helium for one, does
     // lock its store while it runs; the import's error says to close it when that happens.
-    let detail = if browsers.iter().any(|b| b.label == "Safari") {
-        "Uses the session from a browser you're signed in to. Safari needs Full Disk Access for refryt in System Settings."
-    } else {
-        "Uses the session from a browser you're signed in to."
-    };
+    let detail = "Uses the session from a browser you're signed in to.";
     g.row(ui, title, detail, |ui| import_controls(app, ui, &browsers));
 }
 
