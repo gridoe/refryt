@@ -197,6 +197,17 @@ const KNOWN: &[Known] = &[
             "AppData/Local/Naver/Naver Whale/User Data",
         ],
     },
+    // yt-dlp has no name of its own for Helium, so it is read as Chromium from its folder.
+    Known {
+        label: "Helium",
+        name: "chromium",
+        engine: Engine::Chromium,
+        roots: &[
+            ".config/net.imput.helium",
+            "Library/Application Support/net.imput.helium",
+            "AppData/Local/imput/Helium/User Data",
+        ],
+    },
     Known {
         label: "Safari",
         name: "safari",
@@ -209,20 +220,28 @@ fn home() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|d| d.home_dir().to_owned())
 }
 
-/// Whether `yt-dlp` can read this engine's cookies on this OS at all.
+/// Whether `yt-dlp` can read the cookies of this install, at `root`, on this OS at all.
 ///
-/// On Windows every Chromium browser seals its cookie key to its own process (App-Bound
-/// Encryption, Chromium 127+), so the import fails with "Failed to decrypt with DPAPI" no matter
-/// what the user does — `yt-dlp` #10927. `webview_login` is the path that works there, and
-/// offering these browsers anyway would only produce the failure that window exists to avoid.
-/// Firefox-based browsers have no such scheme, and are offered everywhere. Safari is macOS only.
+/// On Windows, Chrome, Edge and other Chromium browsers that ship an elevation service seal
+/// their cookie key to their own process (App-Bound Encryption, Chromium 127+), so the import
+/// fails with "Failed to decrypt with DPAPI" no matter what the user does — `yt-dlp` #10927.
+/// `webview_login` is the path that works there, and offering these browsers anyway would only
+/// produce the failure that window exists to avoid. Which ones do is a fact of each build, not of
+/// Chromium (Helium does not, for one), so it is read from the install: a sealed one keeps an
+/// `app_bound_encrypted_key` beside the plain `encrypted_key` in `Local State`. No `Local State`
+/// means no key yt-dlp could use either. Firefox-based browsers have no such scheme, and are
+/// offered everywhere. Safari is macOS only.
 ///
 /// On macOS Chromium browsers keep their cookie key in the login Keychain. The first import makes
 /// macOS ask for permission to read it, so a password prompt there is expected, not a fault.
-fn readable_on(engine: Engine, windows: bool, macos: bool) -> bool {
+fn readable_on(engine: Engine, root: &Path, windows: bool, macos: bool) -> bool {
     match engine {
         Engine::Firefox => true,
-        Engine::Chromium => !windows,
+        Engine::Chromium => {
+            !windows
+                || std::fs::read_to_string(root.join("Local State"))
+                    .is_ok_and(|state| !state.contains("\"app_bound_encrypted_key\""))
+        }
         Engine::Safari => macos,
     }
 }
@@ -278,13 +297,10 @@ pub fn detected() -> Vec<Browser> {
 
 fn detected_in(home: &Path, windows: bool, macos: bool) -> Vec<Browser> {
     let mut found: Vec<Browser> = Vec::new();
-    for known in KNOWN
-        .iter()
-        .filter(|k| readable_on(k.engine, windows, macos))
-    {
+    for known in KNOWN {
         for root in known.roots {
             let root = home.join(root);
-            if !root.is_dir() {
+            if !root.is_dir() || !readable_on(known.engine, &root, windows, macos) {
                 continue;
             }
             let Some(used) = cookies_used(&root, known.engine) else {
@@ -358,6 +374,11 @@ pub async fn import(browser: &str) -> Result<String> {
                 .find(|l| l.contains("ERROR") || l.contains("could not"))
                 .unwrap_or_else(|| why.trim())
                 .trim();
+            // Chromium on Windows holds its cookie database open while it runs (yt-dlp #7271),
+            // and the browsers offered there are exactly those whose key is not the problem.
+            if why.contains("Could not copy Chrome cookie database") {
+                bail!("{label} is open and keeps its cookies locked; close it and try again");
+            }
             bail!("yt-dlp could not read {label}'s cookies: {why}");
         }
     };
@@ -541,7 +562,58 @@ music.youtube.com\tFALSE\t/\tTRUE\t1799999999\twide\t1
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// Windows: only the Firefox-based browsers, since every Chromium there seals its store.
+    /// Windows: a Chromium browser only when its `Local State` has a plain key and no app-bound
+    /// one. Helium is read as Chromium, from its own folder, and named Helium.
+    #[test]
+    fn windows_offers_chromium_only_without_app_bound_encryption() {
+        let home = home_with(
+            "app-bound",
+            &[
+                (
+                    "AppData/Local/imput/Helium/User Data/Default/Network/Cookies",
+                    5,
+                ),
+                (
+                    "AppData/Local/Microsoft/Edge/User Data/Default/Network/Cookies",
+                    10,
+                ),
+                (
+                    "AppData/Local/Vivaldi/User Data/Default/Network/Cookies",
+                    20,
+                ),
+            ],
+        );
+        let state = |dir: &str, json: &str| {
+            std::fs::write(home.join(dir).join("Local State"), json).unwrap();
+        };
+        state(
+            "AppData/Local/imput/Helium/User Data",
+            r#"{"os_crypt":{"audit_enabled":true,"encrypted_key":"x"}}"#,
+        );
+        state(
+            "AppData/Local/Microsoft/Edge/User Data",
+            r#"{"os_crypt":{"app_bound_encrypted_key":"x","encrypted_key":"y"}}"#,
+        );
+        // Vivaldi has no `Local State` at all: no key, nothing yt-dlp could decrypt with.
+        let found = detected_in(&home, true, false);
+        assert_eq!(labels(&found), ["Helium"]);
+        assert_eq!(
+            found[0].arg,
+            format!(
+                "chromium:{}",
+                home.join("AppData/Local/imput/Helium/User Data").display()
+            )
+        );
+        assert_eq!(label_for(&found[0].arg), "Helium");
+        // Elsewhere the key comes from the keyring, so `Local State` decides nothing.
+        assert_eq!(
+            labels(&detected_in(&home, false, false)),
+            ["Helium", "Edge", "Vivaldi"]
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Windows: no Chromium browser that seals its store (this Chrome has no `Local State`).
     /// Safari only on macOS.
     #[test]
     fn each_os_offers_only_what_it_can_read() {

@@ -815,7 +815,7 @@ fn browser_import(app: &mut App, ui: &mut egui::Ui, g: &mut widgets::Group) {
             ui,
             title,
             if cfg!(target_os = "windows") {
-                "No Firefox-based browser found. Sign in to music.youtube.com there, or use the window above."
+                "No browser found that refryt can read: Firefox-based ones and Helium work, Chrome and Edge don't. Sign in to music.youtube.com there, or use the window above."
             } else {
                 "No browser found. Sign in to music.youtube.com in your browser first."
             },
@@ -823,10 +823,10 @@ fn browser_import(app: &mut App, ui: &mut egui::Ui, g: &mut widgets::Group) {
         );
         return;
     }
-    // No "close the browser first" hint any more: on Windows only Firefox-based browsers are ever
-    // offered here, and they neither lock their store nor seal it, so there is nothing to close
-    // for. The Chromium browsers that needed that advice are not shown there at all — see
-    // `browser_cookies::readable_on`.
+    // No "close the browser first" hint up front: Firefox-based browsers neither lock their store
+    // nor seal it, and the sealed Chromium ones are not shown on Windows at all (see
+    // `browser_cookies::readable_on`). A Chromium one that is shown there, Helium for one, does
+    // lock its store while it runs; the import's error says to close it when that happens.
     let detail = if browsers.iter().any(|b| b.label == "Safari") {
         "Uses the session from a browser you're signed in to. Safari needs Full Disk Access for refryt in System Settings."
     } else {
