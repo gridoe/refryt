@@ -1,0 +1,86 @@
+name: Flatpak repo
+
+# Publishes the Flatpak repo on GitHub Pages, which is what
+#
+#   flatpak install --user https://gridoe.github.io/refryt/refryt.flatpakref
+#
+# installs from and `flatpak update` updates from. Nothing is built here: the release's own
+# .flatpak file is checked against its SHA256SUMS, imported into a fresh repo, signed and
+# deployed, so the repo and the downloadable file are the same build. Only the newest release
+# is in the repo.
+#
+# Release's publish job starts this on main after each tag. By hand, for a release already out:
+#
+#   gh workflow run flatpak-repo.yml -f version=0.1.14
+#
+# Needs the FLATPAK_GPG_KEY secret (the armoured private key, no passphrase) whose public half is
+# packaging/flatpak/refryt.gpg, and Pages set to deploy from GitHub Actions.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The released version to publish, without the v.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flatpak-repo
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends flatpak ostree
+      - name: Download the release's Flatpak and check it
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a version: $VERSION"; exit 1; }
+          mkdir dl && cd dl
+          gh release download "v$VERSION" -R "$GITHUB_REPOSITORY" \
+            -p "refryt-$VERSION-x86_64.flatpak" -p "refryt-$VERSION-SHA256SUMS.txt"
+          grep " refryt-$VERSION-x86_64.flatpak\$" "refryt-$VERSION-SHA256SUMS.txt" | sha256sum -c -
+      - name: Import the signing key
+        env:
+          FLATPAK_GPG_KEY: ${{ secrets.FLATPAK_GPG_KEY }}
+        run: scripts/import-flatpak-key.sh >> "$GITHUB_ENV"
+      - name: Make the signed repo
+        run: |
+          sign=(--gpg-sign="$FLATPAK_GPG_KEY_ID" --gpg-homedir="$FLATPAK_GPG_HOMEDIR")
+          mkdir -p site/repo
+          ostree init --repo=site/repo --mode=archive-z2
+          flatpak build-import-bundle "${sign[@]}" site/repo "dl/refryt-$VERSION-x86_64.flatpak"
+          flatpak build-update-repo "${sign[@]}" \
+            --title=Refryt --default-branch=master --prune --generate-static-deltas site/repo
+          ostree refs --repo=site/repo
+      - name: Add the install files
+        run: |
+          key="$(base64 -w0 packaging/flatpak/refryt.gpg)"
+          for f in refryt.flatpakref refryt.flatpakrepo; do
+            sed "s|@GPGKEY@|$key|" "packaging/flatpak/pages/$f" > "site/$f"
+          done
+          cp packaging/flatpak/pages/index.html site/
+          du -sh site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

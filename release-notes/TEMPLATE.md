@@ -1,9 +1,10 @@
 **Linux** — `refryt-@VERSION@-x86_64.AppImage`: download, `chmod +x`, run. Or use
 `scripts/appimage-install.sh install` from source for a desktop launcher entry.
 
-**Linux, Flatpak** — `refryt-@VERSION@-x86_64.flatpak`. It isn't on Flathub, so install the file:
-`flatpak install --user refryt-@VERSION@-x86_64.flatpak`, then `flatpak run io.github.gridoe.refryt`.
-It needs the GNOME 51 runtime, which Flatpak offers to fetch the first time. mpv and yt-dlp are
+**Linux, Flatpak** — `flatpak install --user https://gridoe.github.io/refryt/refryt.flatpakref`,
+then `flatpak run io.github.gridoe.refryt`; updates come with `flatpak update`. The file
+`refryt-@VERSION@-x86_64.flatpak` installs the same build and updates from the same repo. It
+needs the GNOME 51 runtime, which Flatpak offers to fetch the first time. mpv and yt-dlp are
 inside. The sandbox can't see your browsers' profile folders, so "Import from a browser" is hidden
 and you sign in through the app's own window; "Launch on startup" is hidden too, since a sandboxed
 app can't write a login item.
