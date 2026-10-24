@@ -197,14 +197,16 @@ const KNOWN: &[Known] = &[
             "AppData/Local/Naver/Naver Whale/User Data",
         ],
     },
-    // yt-dlp has no name of its own for Helium, so it is read as Chromium from its folder.
+    // yt-dlp has no name of its own for Helium, so it is read as Chromium from its folder. Not
+    // on macOS: Helium there keeps its key in the Keychain as "Helium Storage Key", while yt-dlp
+    // reading it as Chromium asks for "Chromium Safe Storage" — a password prompt, then cookies
+    // it cannot decrypt.
     Known {
         label: "Helium",
         name: "chromium",
         engine: Engine::Chromium,
         roots: &[
             ".config/net.imput.helium",
-            "Library/Application Support/net.imput.helium",
             "AppData/Local/imput/Helium/User Data",
         ],
     },
@@ -640,6 +642,20 @@ music.youtube.com\tFALSE\t/\tTRUE\t1799999999\twide\t1
             ["Chrome", "Firefox"]
         );
         assert!(labels(&detected_in(&home, false, true)).contains(&"Safari"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// macOS: no Helium, whose Keychain item yt-dlp does not know.
+    #[test]
+    fn macos_does_not_offer_helium() {
+        let home = home_with(
+            "helium-macos",
+            &[(
+                "Library/Application Support/net.imput.helium/Default/Cookies",
+                5,
+            )],
+        );
+        assert!(labels(&detected_in(&home, false, true)).is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
 
