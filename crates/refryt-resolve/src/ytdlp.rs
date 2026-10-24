@@ -657,13 +657,18 @@ pub(crate) mod tests {
 
     /// A stub yt-dlp that refuses anonymous runs with `refusal` and answers signed-in ones,
     /// recording every run in `log`.
+    ///
+    /// The script is written beside its final name and put in place by `install`, so this
+    /// process never holds it open for writing. A test on another thread that spawns while
+    /// `fs::write` has the file open hands that descriptor to its child until the child's exec,
+    /// and running the script inside that window fails with ETXTBSY ("Text file busy").
     #[cfg(unix)]
     pub(crate) fn gated_stub(dir: &std::path::Path, refusal: &str) -> (String, std::path::PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let log = dir.join("runs");
         let script = dir.join("yt-dlp");
+        let staged = dir.join("yt-dlp.sh");
         std::fs::write(
-            &script,
+            &staged,
             format!(
                 "#!/bin/sh\n\
                  case \"$*\" in\n\
@@ -676,7 +681,16 @@ pub(crate) mod tests {
             ),
         )
         .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let installed = std::process::Command::new("install")
+            .args(["-m", "755"])
+            .arg(&staged)
+            .arg(&script)
+            .status()
+            .unwrap();
+        assert!(
+            installed.success(),
+            "install could not place the stub yt-dlp"
+        );
         (script.to_string_lossy().into_owned(), log)
     }
 
