@@ -19,8 +19,7 @@ const SITE: &str = "https://music.youtube.com";
 
 /// Where to find the header, in the order the developer tools are clicked through.
 const STEPS: [&str; 4] = [
-    "Sign in at music.youtube.com, ideally in a private window you close once you have the \
-     cookie, so your own browsing does not replace it.",
+    "Sign in at music.youtube.com.",
     "Open your browser's developer tools (F12, or ⌥⌘I on a Mac), switch to Network and refresh.",
     "In the list of requests, pick one called \"browse\" or \"next\".",
     "In its Request Headers, look for \"cookie\". Right-click it and choose Copy value, or \

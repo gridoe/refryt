@@ -2528,7 +2528,8 @@ impl Backend {
     // takes effect on the next song, not mid-song.
 
     /// Fetch lyrics for `track`: LRCLIB's synced text first, InnerTube's plain text as fallback.
-    pub fn fetch_lyrics(&self, track: Track) {
+    /// With `lrclib` off (the Settings switch), InnerTube's alone.
+    pub fn fetch_lyrics(&self, track: Track, lrclib: bool) {
         let (tx, ctx, http, api) = (
             self.tx.clone(),
             self.ctx.clone(),
@@ -2537,7 +2538,12 @@ impl Backend {
         );
         self.rt.spawn(async move {
             let video_id = track.video_id.clone();
-            let lyrics = match lrclib(&http, &track).await {
+            let synced = if lrclib {
+                self::lrclib(&http, &track).await
+            } else {
+                None
+            };
+            let lyrics = match synced {
                 Some(lyrics) => Some(lyrics),
                 None => api.lyrics(&track.video_id).await.unwrap_or(None),
             };

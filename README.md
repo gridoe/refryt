@@ -152,7 +152,7 @@ Sign in from the app's own window, or use Import from browser on Home or in Sett
 
 Settings, themes, the session and the log live in `~/.config/refryt` on Linux, `~/Library/Application Support/refryt` on macOS and `~/.var/app/io.github.gridoe.refryt/config/refryt` in the Flatpak. The session is stored with owner-only permissions.
 
-There is no telemetry. refryt connects to YouTube, [LRCLIB](https://lrclib.net) for lyrics, GitHub for the update check, and Discord's local client if Rich Presence is on. Crash reports stay on disk until you choose to copy or file them.
+There is no telemetry. refryt connects to YouTube, [LRCLIB](https://lrclib.net) for lyrics, GitHub for the update check, and Discord's local client if Rich Presence is on. LRCLIB and the update check can be turned off in Settings. Crash reports stay on disk until you choose to copy or file them. [PRIVACY.md](PRIVACY.md) has the details.
 
 ## Status
 

@@ -35,6 +35,8 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 LicenseFile=..\LICENSE
+; Shown before installing: what refryt connects to and how to turn each one off.
+InfoBeforeFile=..\PRIVACY.md
 DisableProgramGroupPage=yes
 ; No signing key exists for this project, so an unsigned installer will still trip Windows'
 ; SmartScreen the first few times anyone runs it — a known, disclosed limitation, not a bug.
