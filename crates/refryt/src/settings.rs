@@ -309,6 +309,10 @@ pub struct Settings {
     /// connects as refryt's own Discord application — the id is fixed in `crate::discord` — so
     /// turning it on is the only setup there is.
     pub discord_rich_presence: bool,
+    /// Ask LRCLIB for synced lyrics. On by default; off, lyrics come from YouTube alone, as
+    /// plain text. LRCLIB gets the song's title, artist, album and length while the lyrics are
+    /// shown, so it is a switch: see PRIVACY.md.
+    pub lrclib_lyrics: bool,
     /// Folders scanned for local audio files, shown in the Library's Local tab. Absolute paths,
     /// same shape as `playlist_order`.
     pub local_folders: Vec<String>,
@@ -358,6 +362,7 @@ impl Default for Settings {
             start_on_boot: false,
             hide_tray_on_close: false,
             discord_rich_presence: false,
+            lrclib_lyrics: true,
             local_folders: Vec::new(),
             playlist_default_sort: crate::app::PlaylistSort::Default,
             sidebar_width: None,
@@ -532,6 +537,10 @@ mod tests {
         assert!(
             partial.autoplay,
             "an older settings file without the toggle must still autoplay"
+        );
+        assert!(
+            partial.lrclib_lyrics,
+            "an older settings file without the toggle keeps synced lyrics"
         );
     }
 

@@ -6365,7 +6365,8 @@ impl App {
         self.lyrics_error = None;
         self.lyrics_loading = true;
         self.lyrics_scroll_reset = true;
-        self.backend.fetch_lyrics(track);
+        self.backend
+            .fetch_lyrics(track, self.settings.lrclib_lyrics);
     }
 
     /// Put `track` straight after the playing one, in the list and in a shuffle's order.

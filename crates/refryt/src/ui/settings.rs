@@ -684,6 +684,7 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
     // Discord Rich Presence. Nothing to configure: the app connects as its own Discord
     // application (the id is fixed in `crate::discord`), so the toggle is the whole setting.
     let mut discord = app.settings.discord_rich_presence;
+    let mut lrclib = app.settings.lrclib_lyrics;
     widgets::setting_group(ui, &p, Some("Integrations"), |ui, g| {
         toggle_row(
             g,
@@ -693,6 +694,15 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
             "Discord Rich Presence",
             "Shows what you're playing on Discord.",
             &mut discord,
+        );
+        toggle_row(
+            g,
+            ui,
+            &p,
+            "setting-lrclib",
+            "Synced lyrics from LRCLIB",
+            "Asks lrclib.net for lyrics with timing. Off, lyrics come from YouTube without it.",
+            &mut lrclib,
         );
     });
 
@@ -704,6 +714,7 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
         }
         s.hide_tray_on_close = hide_tray;
         s.discord_rich_presence = discord;
+        s.lrclib_lyrics = lrclib;
     });
 }
 
