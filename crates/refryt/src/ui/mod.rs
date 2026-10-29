@@ -1550,21 +1550,36 @@ pub(crate) fn mood_chips<'a>(
                 let t = widgets::lit(ui, &response);
                 ui.painter().rect_filled(
                     rect,
-                    egui::CornerRadius::same(theme::RADIUS),
+                    egui::CornerRadius::same(theme::radii().control),
                     palette.glass(widgets::mix(palette.surface, palette.surface_hover, t)),
                 );
                 match colour {
                     Some([r, g, b]) => {
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(rect.min, egui::vec2(4.0, chip_h)),
-                            egui::CornerRadius::same(2),
-                            egui::Color32::from_rgb(r, g, b),
-                        );
+                        // The stripe is the chip's own left edge: the chip's shape, cut 4pt
+                        // wide, so it follows the chip's curve. A bar with corners of its own
+                        // squared off the chip's at any radius wider than the stripe.
+                        let radius = theme::radii().control;
+                        let stripe = egui::Rect::from_min_size(rect.min, egui::vec2(4.0, chip_h));
+                        ui.painter()
+                            .with_clip_rect(stripe.intersect(ui.clip_rect()))
+                            .rect_filled(
+                                egui::Rect::from_min_size(
+                                    rect.min,
+                                    egui::vec2(2.0 * f32::from(radius) + 4.0, chip_h),
+                                ),
+                                egui::CornerRadius {
+                                    nw: radius,
+                                    sw: radius,
+                                    ne: 0,
+                                    se: 0,
+                                },
+                                egui::Color32::from_rgb(r, g, b),
+                            );
                     }
                     None => {
                         ui.painter().rect(
                             rect,
-                            egui::CornerRadius::same(theme::RADIUS),
+                            egui::CornerRadius::same(theme::radii().control),
                             egui::Color32::TRANSPARENT,
                             egui::Stroke::new(1.0, palette.outline),
                             egui::StrokeKind::Inside,
@@ -1850,7 +1865,7 @@ pub(crate) fn header_wash(
     // radius tall renders its corners at half the card's rounding — visibly squarer than the
     // panel it sits on. Walking the quarter-circle as mesh rows keeps the true radius and the
     // gradient continuous — no seam where a flat cap used to meet the mesh.
-    let rad = (theme::PANEL_RADIUS as f32).min(bottom - start);
+    let rad = (theme::radii().panel as f32).min(bottom - start);
     // (y, left x, right x) — pulled in along the arc, full width once past it.
     let mut rows: Vec<(f32, f32, f32)> = Vec::new();
     const ARC_STEPS: usize = 10;
@@ -2382,7 +2397,7 @@ pub(crate) fn skeleton_page_header(ui: &mut egui::Ui, palette: &theme::Palette, 
         widgets::skeleton_fill(
             ui,
             rect,
-            egui::CornerRadius::same(theme::RADIUS_SMALL),
+            egui::CornerRadius::same(theme::radii().small),
             palette,
         );
     };
@@ -2396,7 +2411,7 @@ pub(crate) fn skeleton_page_header(ui: &mut egui::Ui, palette: &theme::Palette, 
     widgets::skeleton_fill(
         ui,
         art_rect,
-        egui::CornerRadius::same(theme::RADIUS),
+        widgets::ArtShape::Square.radius(art_rect),
         palette,
     );
 
@@ -2601,13 +2616,13 @@ pub(crate) fn info_popup(app: &mut crate::app::App, ui: &mut egui::Ui) {
                 for (grow, alpha) in [(14.0, 24), (7.0, 40), (2.0, 60)] {
                     painter.rect_filled(
                         card.expand(grow),
-                        egui::CornerRadius::same(theme::RADIUS + 2 + grow as u8),
+                        egui::CornerRadius::same(theme::radii().popup + grow as u8),
                         egui::Color32::from_black_alpha(alpha),
                     );
                 }
                 painter.rect_filled(
                     card,
-                    egui::CornerRadius::same(theme::RADIUS + 2),
+                    egui::CornerRadius::same(theme::radii().popup),
                     palette.overlay,
                 );
 
@@ -3163,7 +3178,7 @@ pub(crate) fn offline_banner(app: &mut crate::app::App, ui: &mut egui::Ui) {
     let (strip, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
     ui.painter()
-        .rect_filled(strip, egui::CornerRadius::same(18), p.glass(p.surface));
+        .rect_filled(strip, theme::pill(strip), p.glass(p.surface));
     let mut row = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(strip.shrink2(egui::vec2(14.0, 0.0)))

@@ -14,6 +14,7 @@
 use crate::app::{App, PlaylistSort};
 use crate::ui::{ListClick, PAGE_ART_SIZE, failed, track_rows_quiet};
 use crate::widgets;
+use crate::widgets::Hint;
 
 pub fn page(app: &mut App, ui: &mut egui::Ui) {
     if app.artist_loading {
@@ -206,7 +207,7 @@ fn header(
         );
         let p = app.palette;
         if widgets::icon_button(&mut cui, &p, crate::icons::Icon::Shuffle, 20.0, false)
-            .on_hover_text("Shuffle")
+            .hint("Shuffle")
             .clicked()
         {
             shuffled = true;

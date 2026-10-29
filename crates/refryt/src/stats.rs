@@ -177,7 +177,7 @@ impl Stats {
         ));
         painter.rect_filled(
             rect,
-            CornerRadius::same(theme::RADIUS),
+            CornerRadius::same(theme::radii().popup),
             Color32::from_black_alpha(210),
         );
         for (i, line) in lines.iter().enumerate() {

@@ -2432,12 +2432,13 @@ impl App {
             return;
         }
         // Any of what makes a palette: the mode, the theme chosen for either mode, or how much
-        // of the desktop shows through it.
+        // of the desktop shows through it — and the corners, which egui's style carries too.
         if self.settings.theme != before.theme
             || self.settings.dark_theme != before.dark_theme
             || self.settings.light_theme != before.light_theme
             || self.settings.opacity != before.opacity
             || self.settings.card_outline != before.card_outline
+            || self.settings.corners != before.corners
         {
             self.repaint_palette(ctx);
         }
@@ -7820,7 +7821,7 @@ impl eframe::App for App {
             let card = |fill: Color32, margin: egui::Margin| {
                 egui::Frame::NONE
                     .fill(fill)
-                    .corner_radius(egui::CornerRadius::same(theme::PANEL_RADIUS))
+                    .corner_radius(egui::CornerRadius::same(theme::radii().panel))
                     // A hairline gives a card an edge to tell it from the gutter beside it, which
                     // a see-through one otherwise lacks. A setting, on by default. Only a
                     // see-through card's frame draws it: a solid one's is drawn after its page,
@@ -8026,7 +8027,7 @@ impl eframe::App for App {
             let content = if self.video_open {
                 egui::Frame::NONE
                     .fill(Color32::BLACK)
-                    .corner_radius(egui::CornerRadius::same(theme::PANEL_RADIUS))
+                    .corner_radius(egui::CornerRadius::same(theme::radii().panel))
             } else {
                 card(p.card_fill(), theme::PAGE_INSET)
             };
@@ -8156,7 +8157,7 @@ impl eframe::App for App {
                         egui::Frame::NONE
                             .fill(self.palette.surface)
                             .stroke(egui::Stroke::new(1.0, self.palette.outline))
-                            .corner_radius(egui::CornerRadius::same(8))
+                            .corner_radius(egui::CornerRadius::same(theme::radii().popup))
                             .inner_margin(egui::Margin::symmetric(14, 8))
                             .show(ui, |ui| {
                                 // One line, always: a toast is a short confirmation, and the

@@ -96,14 +96,14 @@ fn ranked(app: &mut App, ui: &mut egui::Ui, section: &ChartSection) {
                 if widgets::is_selected(ui.ctx(), track.video_id.as_str()) {
                     ui.painter().rect_filled(
                         rect,
-                        egui::CornerRadius::same(theme::RADIUS_SMALL),
+                        egui::CornerRadius::same(theme::radii().small),
                         p.glass_state(p.surface_active, 0.55),
                     );
                 }
                 if t > 0.001 {
                     ui.painter().rect_filled(
                         rect,
-                        egui::CornerRadius::same(theme::RADIUS_SMALL),
+                        egui::CornerRadius::same(theme::radii().small),
                         p.glass_state(p.surface_hover, t),
                     );
                 }

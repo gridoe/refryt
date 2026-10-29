@@ -128,7 +128,7 @@ fn window_button(ui: &mut Ui, palette: &Palette, icon: Icon, danger: bool) -> eg
                 palette.glass(palette.surface_hover)
             };
             ui.painter()
-                .rect_filled(rect, CornerRadius::same(theme::RADIUS_SMALL), bg);
+                .rect_filled(rect, CornerRadius::same(theme::radii().small), bg);
         }
         // At rest they follow the window's focus, as a native title bar's do: full strength on
         // the window you're using, quieter on one in the background.

@@ -18,6 +18,7 @@ use crate::chrome;
 use crate::icons::Icon;
 use crate::theme;
 use crate::widgets;
+use crate::widgets::Hint;
 
 /// How wide the search pill is at most, and how small it is allowed to get before the bar is
 /// just too narrow to hold everything — the magnifier and a few letters. Only a window at its
@@ -68,7 +69,7 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
     // Settings itself lives only under the chip, which carries it in every state. One door,
     // one keyhole — a second gear beside the chip was two doors to the same room.
     if widgets::icon_button(&mut right, &p, Icon::History, 18.0, false)
-        .on_hover_text(crate::ui::tips::HISTORY)
+        .hint(crate::ui::tips::HISTORY)
         .clicked()
     {
         app.navigate(Route::History);
@@ -154,7 +155,7 @@ fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
 
     ui.painter().rect(
         rect,
-        CornerRadius::same((SEARCH_H / 2.0) as u8),
+        theme::pill(rect),
         p.glass(widgets::mix(p.surface, p.surface_hover, t)),
         egui::Stroke::new(
             1.0,
@@ -387,7 +388,7 @@ pub(crate) fn search_box(
                             if t > 0.001 {
                                 mui.painter().rect_filled(
                                     row,
-                                    CornerRadius::same(theme::RADIUS_SMALL + 2),
+                                    CornerRadius::same(theme::radii().item),
                                     widgets::mix(p.surface, p.surface_hover, t),
                                 );
                             }
@@ -640,7 +641,7 @@ fn avatar_circle(app: &mut App, ui: &mut Ui, name: Option<&str>) -> egui::Respon
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
     }
-    response.on_hover_text(name.unwrap_or("Not signed in"))
+    response.hint(name.unwrap_or("Not signed in"))
 }
 
 /// What the chip opens: signed in, the channels this Google account can browse as — each with
@@ -720,13 +721,13 @@ fn account_menu(app: &mut App, ui: &mut Ui, chip: &egui::Response, signed_in: bo
                 if resp.is_pointer_button_down_on() {
                     mui.painter().rect_filled(
                         rect,
-                        CornerRadius::same(theme::RADIUS_SMALL + 2),
+                        CornerRadius::same(theme::radii().item),
                         p.surface_active,
                     );
                 } else if t > 0.001 {
                     mui.painter().rect_filled(
                         rect,
-                        CornerRadius::same(theme::RADIUS_SMALL + 2),
+                        CornerRadius::same(theme::radii().item),
                         widgets::mix(p.surface, p.surface_hover, t),
                     );
                 }

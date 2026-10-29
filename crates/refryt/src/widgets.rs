@@ -195,7 +195,7 @@ pub fn icon_button(
         let t = lit(ui, &response);
         if let Some(fill) = shell_state_fill(ui, palette, &response) {
             ui.painter()
-                .rect_filled(rect, CornerRadius::same(theme::RADIUS), fill);
+                .rect_filled(rect, CornerRadius::same(theme::radii().control), fill);
         }
         let fg = if active {
             palette.accent
@@ -297,13 +297,44 @@ pub fn tooltip_right(
         .popup
         .at_pointer()
         .align(egui::RectAlign::RIGHT)
-        .gap(TOOLTIP_GAP);
+        .gap(TOOLTIP_GAP)
+        .frame(hint_frame(&response.ctx.global_style()));
     tooltip.show(|ui| {
         // As egui's own text tooltips: the width fixed, so the area does not shrink round it.
         ui.set_max_width(ui.spacing().tooltip_width);
         ui.add(egui::Label::new(text));
     });
     response
+}
+
+/// A hint's own frame: the popup's, with a lighter shadow than a menu's. A hint is a few words
+/// held by the pointer, and a menu's lift read heavy on something that small.
+fn hint_frame(style: &egui::Style) -> egui::Frame {
+    egui::Frame::popup(style).shadow(egui::epaint::Shadow {
+        offset: [0, 2],
+        blur: 8,
+        spread: 0,
+        color: style.visuals.popup_shadow.color.gamma_multiply(0.5),
+    })
+}
+
+/// egui's `on_hover_text` in a [`hint_frame`]. Every hover hint in the app goes through this.
+pub trait Hint {
+    fn hint(self, text: impl Into<egui::WidgetText>) -> Self;
+}
+
+impl Hint for egui::Response {
+    fn hint(self, text: impl Into<egui::WidgetText>) -> Self {
+        let text = text.into();
+        let mut tooltip = egui::Tooltip::for_enabled(&self);
+        tooltip.popup = tooltip.popup.frame(hint_frame(&self.ctx.global_style()));
+        tooltip.show(|ui| {
+            // As egui's own: the width fixed, so the area does not shrink round it.
+            ui.set_max_width(ui.spacing().tooltip_width);
+            ui.add(egui::Label::new(text));
+        });
+        self
+    }
 }
 
 /// How far a [`tooltip_right`] sits from the pointer.
@@ -340,7 +371,7 @@ pub fn nav_item(
         };
         if let Some(fill) = fill {
             ui.painter()
-                .rect_filled(rect, CornerRadius::same(theme::RADIUS), fill);
+                .rect_filled(rect, CornerRadius::same(theme::radii().control), fill);
         }
 
         let fg = if selected {
@@ -408,7 +439,7 @@ impl ArtShape {
             // do not start eating the image.
             ArtShape::Square | ArtShape::Wide => CornerRadius::same(
                 ((rect.width().min(rect.height()) * 0.125) as u8)
-                    .clamp(theme::RADIUS, theme::ART_RADIUS_MAX),
+                    .clamp(theme::radii().art_min, theme::radii().art_max),
             ),
             ArtShape::Circle => {
                 CornerRadius::same((rect.width().min(rect.height()) / 2.0).clamp(0.0, 255.0) as u8)
@@ -1246,7 +1277,7 @@ pub(crate) fn clip_card_content(ui: &mut Ui, card: egui::Rect, inset_x: f32, pal
     if !palette.translucent() {
         return;
     }
-    let close = corner_clearance(crate::theme::PANEL_RADIUS as f32, inset_x);
+    let close = corner_clearance(crate::theme::radii().panel as f32, inset_x);
     let clip = ui.clip_rect().intersect(card.shrink2(vec2(0.0, close)));
     ui.set_clip_rect(clip);
 }
@@ -1291,7 +1322,7 @@ pub(crate) fn paint_corner_notches(ui: &Ui, card: egui::Rect, inset_x: f32, pale
     }
     let colour = palette.window;
     let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), card);
-    for corner in notch_rows(card, crate::theme::PANEL_RADIUS as f32, inset_x) {
+    for corner in notch_rows(card, crate::theme::radii().panel as f32, inset_x) {
         if corner.len() < 2 {
             continue;
         }
@@ -1354,7 +1385,7 @@ impl Drop for CardEdge {
         painter.add(
             egui::epaint::RectShape::stroke(
                 self.card,
-                CornerRadius::same(crate::theme::PANEL_RADIUS),
+                CornerRadius::same(crate::theme::radii().panel),
                 egui::Stroke::new(1.0, colour),
                 egui::StrokeKind::Inside,
             )
@@ -1928,7 +1959,7 @@ fn skeleton_bar(ui: &mut Ui, palette: &Palette, w: f32, h: f32) {
     if !ui.is_rect_visible(rect) {
         return;
     }
-    skeleton_fill(ui, rect, CornerRadius::same(theme::RADIUS_SMALL), palette);
+    skeleton_fill(ui, rect, CornerRadius::same(theme::radii().small), palette);
 }
 
 /// Grey placeholder rows for an unnumbered list (search, history, library songs): the rows
@@ -1989,7 +2020,7 @@ fn skeleton_row_at(
     if !ui.is_rect_visible(rect) {
         return;
     }
-    let small = CornerRadius::same(theme::RADIUS_SMALL);
+    let small = CornerRadius::same(theme::radii().small);
     let duration_w = 34.0;
     let right_pad = 20.0;
     let num_w = if numbered { theme::ROW_NUMBER_W } else { 0.0 };
@@ -2087,7 +2118,12 @@ pub fn skeleton_chips(ui: &mut Ui, palette: &Palette, rows: usize) {
             if !ui.is_rect_visible(rect) {
                 continue;
             }
-            skeleton_fill(ui, rect, CornerRadius::same(theme::RADIUS), palette);
+            skeleton_fill(
+                ui,
+                rect,
+                CornerRadius::same(theme::radii().control),
+                palette,
+            );
         }
     });
 }
@@ -2101,7 +2137,7 @@ pub fn skeleton_pills(ui: &mut Ui, palette: &Palette, n: usize) {
             let (rect, _) =
                 ui.allocate_exact_size(vec2(WIDTHS[i % WIDTHS.len()], 32.0), Sense::hover());
             if ui.is_rect_visible(rect) {
-                skeleton_fill(ui, rect, CornerRadius::same(16), palette);
+                skeleton_fill(ui, rect, theme::pill(rect), palette);
             }
         }
     });
@@ -2193,7 +2229,7 @@ pub fn skeleton_heading(ui: &mut Ui, palette: &Palette, arrows: bool) {
             egui::pos2(rect.left(), rect.center().y - cap / 2.0 + 1.0),
             vec2(130.0_f32.min(rect.width()), cap),
         ),
-        CornerRadius::same(theme::RADIUS_SMALL),
+        CornerRadius::same(theme::radii().small),
         palette,
     );
 }
@@ -2208,7 +2244,7 @@ pub fn skeleton_strapline(ui: &mut Ui, palette: &Palette) {
             egui::pos2(rect.left(), rect.center().y - 3.5),
             vec2(40.0_f32.min(rect.width()), 7.0),
         ),
-        CornerRadius::same(theme::RADIUS_SMALL),
+        CornerRadius::same(theme::radii().small),
         palette,
     );
     ui.add_space(-4.0);
@@ -2228,7 +2264,7 @@ pub fn skeleton_page_title(ui: &mut Ui, palette: &Palette) {
             egui::pos2(rect.left(), rect.center().y - cap / 2.0 + 1.0),
             vec2(220.0_f32.min(rect.width()), cap),
         ),
-        CornerRadius::same(theme::RADIUS_SMALL),
+        CornerRadius::same(theme::radii().small),
         palette,
     );
     ui.add_space(10.0);
@@ -2271,11 +2307,8 @@ fn skeleton_card(ui: &mut Ui, palette: &Palette, width: f32, shape: ArtShape) {
         rect.min + vec2(8.0, 8.0),
         vec2(width - 16.0, card_art_height(width, shape)),
     );
-    let radius = match shape {
-        ArtShape::Circle => CornerRadius::same((art.height() / 2.0).clamp(0.0, 255.0) as u8),
-        ArtShape::Square | ArtShape::Wide => CornerRadius::same(theme::RADIUS),
-    };
-    skeleton_fill(ui, art, radius, palette);
+    // The art's own curve, so the corner does not change when the cover lands.
+    skeleton_fill(ui, art, shape.radius(art), palette);
     for (dy, w) in [(14.0, 0.7), (28.0, 0.45)] {
         skeleton_fill(
             ui,
@@ -2283,7 +2316,7 @@ fn skeleton_card(ui: &mut Ui, palette: &Palette, width: f32, shape: ArtShape) {
                 art.left_bottom() + vec2(0.0, dy),
                 vec2((width - 16.0) * w, 9.0),
             ),
-            CornerRadius::same(theme::RADIUS_SMALL),
+            CornerRadius::same(theme::radii().small),
             palette,
         );
     }
@@ -2456,7 +2489,7 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
         .as_ref()
         .is_some_and(|m| is_selected(ui.ctx(), m.track.video_id.as_str()));
     if ui.is_rect_visible(rect) {
-        let radius = CornerRadius::same(theme::RADIUS);
+        let radius = CornerRadius::same(theme::radii().control);
         // The selection (a single click in double-click mode) sits under the hover fill, so the
         // marked row reads at rest and the pointer still lights it.
         if selected {
@@ -2477,13 +2510,11 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
         if !hide_art {
             paint_art(ui, palette, art_rect, art, shape);
             if loading {
-                let radius = if shape == ArtShape::Circle {
-                    CornerRadius::same(u8::MAX)
-                } else {
-                    CornerRadius::same(theme::RADIUS_SMALL)
-                };
-                ui.painter()
-                    .rect_filled(art_rect, radius, Color32::from_black_alpha(120));
+                ui.painter().rect_filled(
+                    art_rect,
+                    shape.radius(art_rect),
+                    Color32::from_black_alpha(120),
+                );
                 paint_spinner(
                     ui,
                     art_rect.center(),
@@ -2579,7 +2610,7 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
                 Rect::from_min_size(egui::pos2(text_x, rect.center().y - 17.0), vec2(15.0, 15.0));
             ui.painter().rect(
                 badge,
-                CornerRadius::same(3),
+                CornerRadius::same(theme::radii().small),
                 Color32::TRANSPARENT,
                 egui::Stroke::new(1.0, palette.dim),
                 egui::StrokeKind::Inside,
@@ -2768,7 +2799,7 @@ fn add_button(ui: &mut Ui, palette: &Palette, rect: Rect, id: egui::Id) -> egui:
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    response.on_hover_text("Add to playlist")
+    response.hint("Add to playlist")
 }
 
 /// A song's right-click menu, reporting the choice. Shared by every row and the player bar.
@@ -3404,6 +3435,30 @@ pub fn card_size(width: f32, shape: ArtShape) -> egui::Vec2 {
     vec2(width, 8.0 + card_art_height(width, shape) + 52.0)
 }
 
+/// A card's cover: inset 8pt from the card's top and sides.
+fn card_art(card: Rect, width: f32, shape: ArtShape) -> Rect {
+    Rect::from_min_size(
+        card.min + vec2(8.0, 8.0),
+        vec2(width - 16.0, card_art_height(width, shape)),
+    )
+}
+
+/// A card's hover and selection fill: the cover's curve grown by the 8pt it is inset, so the
+/// two curves are concentric — at the general radius the fill rounded less than the cover inside
+/// it once a big cover's corner had grown. Held to twice the cover's own curve, so a nearly
+/// square cover (Sharp) keeps a nearly square card, and to the panel's, so a card never rounds
+/// more than the card it sits on. A round cover (an artist) is measured as a square one of the
+/// same size: the fill around a circle is still a card.
+fn card_radius(art: Rect) -> CornerRadius {
+    let cover = ArtShape::Square.radius(art).nw;
+    CornerRadius::same(
+        cover
+            .saturating_add(8)
+            .min(cover.saturating_mul(2))
+            .min(theme::radii().panel),
+    )
+}
+
 /// A clickable card for grids: rounded cover over a title and subtitle.
 ///
 /// Allocates a square cover plus a two-line label band — or a 16:9 cover in a shorter card for
@@ -3427,9 +3482,11 @@ pub fn art_card(
     let size = card_size(width, shape);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let mut play = false;
+    let mut cut = false;
 
     if ui.is_rect_visible(rect) {
-        let radius = CornerRadius::same(theme::RADIUS);
+        let art = card_art(rect, width, shape);
+        let radius = card_radius(art);
         // Geometric, not `hovered()`: the play button's own hit region sits stacked on top of
         // this card and would steal the hover flag the instant the pointer reached it, fading
         // the whole card — button included — out from directly under the pointer. See `fade`'s
@@ -3451,10 +3508,6 @@ pub fn art_card(
                 palette.glass_state(palette.surface_hover, t),
             ));
         }
-        let art = Rect::from_min_size(
-            rect.min + vec2(8.0, 8.0),
-            vec2(width - 16.0, card_art_height(width, shape)),
-        );
         paint_art(ui, palette, art, texture, shape);
         // Circles are people — an artist has no single thing to play, so no play button.
         if shape != ArtShape::Circle {
@@ -3498,21 +3551,35 @@ pub fn art_card(
         }
 
         let label_w = width - 16.0;
+        let shown_title = truncate_to(ui, title, theme::medium(13.0), label_w);
+        let shown_subtitle = truncate_to(ui, subtitle, theme::regular(12.0), label_w);
+        // Either line cut short: the whole of both under the pointer.
+        cut = matches!(shown_title, std::borrow::Cow::Owned(_))
+            || matches!(shown_subtitle, std::borrow::Cow::Owned(_));
         crate::emoji::paint_line(
             ui,
             art.left_bottom() + vec2(0.0, 14.0),
-            &truncate_to(ui, title, theme::medium(13.0), label_w),
+            &shown_title,
             theme::medium(13.0),
             palette.text,
         );
         crate::emoji::paint_line(
             ui,
             art.left_bottom() + vec2(0.0, 28.0),
-            &truncate_to(ui, subtitle, theme::regular(12.0), label_w),
+            &shown_subtitle,
             theme::regular(12.0),
             palette.secondary,
         );
     }
+    let response = if cut {
+        response.hint(if subtitle.is_empty() {
+            title.to_owned()
+        } else {
+            format!("{title}\n{subtitle}")
+        })
+    } else {
+        response
+    };
     // Outside the visibility check, as the row menu is: a menu opened at the pointer must
     // survive its card scrolling out from under it.
     let action = menu.and_then(|m| card_menu(ui, palette, &response, m));
@@ -3547,7 +3614,8 @@ pub fn folder_card(
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
 
     if ui.is_rect_visible(rect) {
-        let radius = CornerRadius::same(theme::RADIUS);
+        let art = card_art(rect, width, shape);
+        let radius = card_radius(art);
         let t = lit(ui, &response);
         if t > 0.001 {
             ui.painter().add(egui::epaint::RectShape::filled(
@@ -3556,10 +3624,6 @@ pub fn folder_card(
                 palette.glass_state(palette.surface_hover, t),
             ));
         }
-        let art = Rect::from_min_size(
-            rect.min + vec2(8.0, 8.0),
-            vec2(width - 16.0, card_art_height(width, shape)),
-        );
         ui.painter()
             .rect_filled(art, shape.radius(art), palette.glass(palette.surface));
         let g = art.width() * 0.5;
@@ -3982,7 +4046,7 @@ pub fn icon_chip(ui: &mut Ui, palette: &Palette, icon: Icon, glyph: f32) -> egui
         } else {
             fill
         };
-        ui.painter().rect_filled(rect, CornerRadius::same(16), fill);
+        ui.painter().rect_filled(rect, theme::pill(rect), fill);
         icon.image(mix(palette.secondary, palette.text, t), glyph)
             .paint_at(
                 ui,
@@ -4040,7 +4104,7 @@ pub fn swatch_chip(
         } else {
             fill
         };
-        ui.painter().rect_filled(rect, CornerRadius::same(16), fill);
+        ui.painter().rect_filled(rect, theme::pill(rect), fill);
         let dot_center = rect.left_center() + vec2(16.0, 0.0);
         ui.painter().circle_filled(dot_center, DOT / 2.0, swatch);
         let text_pos = dot_center + vec2(DOT / 2.0 + 8.0, -galley.size().y / 2.0);
@@ -4134,7 +4198,7 @@ fn dropdown_row(
         let t = lit(ui, &response);
         if let Some(fill) = state_fill(ui, palette, &response) {
             ui.painter()
-                .rect_filled(rect, CornerRadius::same(theme::RADIUS_SMALL + 2), fill);
+                .rect_filled(rect, CornerRadius::same(theme::radii().item), fill);
         }
         let fg = mix(palette.secondary, palette.text, t);
         let nudge = press_offset(&response);
@@ -4232,7 +4296,7 @@ fn text_dropdown_row(
         let t = lit(ui, &response);
         if let Some(fill) = state_fill(ui, palette, &response) {
             ui.painter()
-                .rect_filled(rect, CornerRadius::same(theme::RADIUS_SMALL + 2), fill);
+                .rect_filled(rect, CornerRadius::same(theme::radii().item), fill);
         }
         let fg = mix(palette.secondary, palette.text, t);
         let nudge = press_offset(&response);
@@ -4267,6 +4331,21 @@ fn text_dropdown_row(
     response
 }
 
+/// A toggle's knob: a disc in a pill track, and at the squarer [`theme::Corners`] levels the
+/// same rounded square as its track, 3pt in, so the two curves nest.
+fn toggle_knob(ui: &Ui, track: Rect, cx: f32, r: f32, colour: Color32) {
+    ui.painter()
+        .rect_filled(knob_rect(track, cx, r), knob_radius(track), colour);
+}
+
+fn knob_rect(track: Rect, cx: f32, r: f32) -> Rect {
+    Rect::from_center_size(egui::pos2(cx, track.center().y), vec2(2.0 * r, 2.0 * r))
+}
+
+fn knob_radius(track: Rect) -> CornerRadius {
+    CornerRadius::same(theme::pill(track).nw.saturating_sub(3))
+}
+
 /// [`toggle`], greyed and inert when `enabled` is false — for a setting that has nothing to
 /// act on right now (no compositor blur, transparency off) rather than a switch that silently
 /// does nothing when clicked.
@@ -4284,12 +4363,11 @@ pub fn toggle_enabled(
     if ui.is_rect_visible(rect) {
         let t = ui.ctx().animate_bool_with_time(id, *on, 0.12);
         let track = palette.glass(palette.surface.lerp_to_gamma(palette.dim, t * 0.5));
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(11), track);
+        ui.painter().rect_filled(rect, theme::pill(rect), track);
         let r = (rect.height() - 6.0) / 2.0;
         let cx = rect.left() + 3.0 + r + t * (rect.width() - 6.0 - 2.0 * r);
         ui.painter()
-            .circle_filled(egui::pos2(cx, rect.center().y), r, palette.dim);
+            .rect_filled(knob_rect(rect, cx, r), knob_radius(rect), palette.dim);
     }
     response
 }
@@ -4313,7 +4391,7 @@ pub fn toggle(ui: &mut Ui, palette: &Palette, id: egui::Id, on: &mut bool) -> eg
             .lerp_to_gamma(palette.accent, t);
         ui.painter().rect_filled(
             rect,
-            CornerRadius::same(11),
+            theme::pill(rect),
             if response.is_pointer_button_down_on() {
                 track.lerp_to_gamma(palette.surface_active, 0.35)
             } else {
@@ -4322,8 +4400,10 @@ pub fn toggle(ui: &mut Ui, palette: &Palette, id: egui::Id, on: &mut bool) -> eg
         );
         let r = (rect.height() - 6.0) / 2.0;
         let cx = rect.left() + 3.0 + r + t * (rect.width() - 6.0 - 2.0 * r);
-        ui.painter().circle_filled(
-            egui::pos2(cx, rect.center().y),
+        toggle_knob(
+            ui,
+            rect,
+            cx,
             if response.is_pointer_button_down_on() {
                 r * 0.9
             } else {
@@ -4522,7 +4602,7 @@ pub fn setting_group(
     egui::Frame::NONE
         // Between the page and a chip's own fill, so an unselected chip still shows on it.
         .fill(palette.glass(mix(palette.panel, palette.surface, 0.4)))
-        .corner_radius(CornerRadius::same(theme::RADIUS + 4))
+        .corner_radius(CornerRadius::same(theme::radii().popup))
         .inner_margin(egui::Margin::symmetric(16, 0))
         .show(ui, |ui| {
             ui.set_width(inner);
@@ -4586,11 +4666,11 @@ fn pill(ui: &mut Ui, palette: &Palette, label: &str, style: PillStyle) -> egui::
         } else {
             fill
         };
-        ui.painter().rect_filled(rect, CornerRadius::same(16), fill);
+        ui.painter().rect_filled(rect, theme::pill(rect), fill);
         if matches!(style, PillStyle::Outline) {
             ui.painter().rect_stroke(
                 rect,
-                CornerRadius::same(16),
+                theme::pill(rect),
                 egui::Stroke::new(1.0, mix(palette.outline, palette.text, t * 0.5)),
                 egui::StrokeKind::Inside,
             );
@@ -4675,7 +4755,7 @@ pub(crate) fn menu_frame(ui: &Ui, palette: &Palette) -> egui::Frame {
             palette.overlay
         })
         .stroke(egui::Stroke::new(1.0, palette.outline.gamma_multiply(0.55)))
-        .corner_radius(CornerRadius::same(12))
+        .corner_radius(CornerRadius::same(theme::radii().popup))
         .inner_margin(egui::Margin::same(6))
         .shadow(egui::epaint::Shadow {
             offset: [0, 2],
@@ -4762,7 +4842,7 @@ fn menu_row(
         let t = lit(ui, &response);
         if let Some(fill) = state_fill(ui, palette, &response) {
             ui.painter()
-                .rect_filled(rect, CornerRadius::same(theme::RADIUS_SMALL + 2), fill);
+                .rect_filled(rect, CornerRadius::same(theme::radii().item), fill);
         }
         let fg = mix(palette.secondary, palette.text, t);
         let nudge = press_offset(&response);
@@ -4980,7 +5060,7 @@ pub fn volume_slider(ui: &mut Ui, palette: &Palette, volume: f64, unmute_to: f64
     // Mute toggle on the icon itself.
     let mut new_volume = None;
     if icon_button(ui, palette, icon, 16.0, false)
-        .on_hover_text(crate::ui::tips::mute(volume <= 0.5))
+        .hint(crate::ui::tips::mute(volume <= 0.5))
         .clicked()
     {
         new_volume = Some(if volume > 0.5 { 0.0 } else { unmute_to });

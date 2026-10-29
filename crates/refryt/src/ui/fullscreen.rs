@@ -18,6 +18,7 @@ use crate::icons::Icon;
 use crate::model::LikeStatus;
 use crate::theme;
 use crate::ui::RowAction;
+use crate::widgets::Hint;
 use crate::widgets::{self, EdgeFade, edge_fades, fade_painted, painted_so_far};
 
 /// How far the lyrics fade out at the top and bottom of their column, at scale 1. Long and eased,
@@ -436,7 +437,8 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
     if let Some(cover) = lay.cover {
         if video {
             // A music video plays where the cover would, at its own 16:9.
-            let radius = CornerRadius::same(12);
+            // The cover's own curve, so a video and a cover in the same place round alike.
+            let radius = crate::widgets::ArtShape::Wide.radius(cover);
             ui.painter().rect_filled(cover, radius, Color32::BLACK);
             crate::ui::video::paint_frame(app, ui, cover, radius);
             if ui
@@ -680,7 +682,7 @@ fn lyrics_skeleton(ui: &mut egui::Ui, p: &theme::Palette, m: &Metrics, rect: Rec
         // Each bar fades with its place in the list, so the column trails off.
         let mut child = ui.new_child(UiBuilder::new().max_rect(bar));
         child.multiply_opacity((1.0 - 0.09 * i as f32).max(0.15));
-        widgets::skeleton_fill(&child, bar, CornerRadius::same(theme::RADIUS_SMALL), &fill);
+        widgets::skeleton_fill(&child, bar, CornerRadius::same(theme::radii().small), &fill);
     }
 }
 
@@ -971,14 +973,14 @@ fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Re
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     if widgets::icon_button(&mut cui, &p, Icon::Shuffle, m.icon, app.q.is_shuffled())
-        .on_hover_text(crate::ui::tips::shuffle(app.q.is_shuffled()))
+        .hint(crate::ui::tips::shuffle(app.q.is_shuffled()))
         .clicked()
     {
         app.toggle_shuffle();
     }
     let mut skip = 0isize;
     if widgets::icon_button(&mut cui, &p, Icon::SkipBackFilled, m.icon, false)
-        .on_hover_text(crate::ui::tips::PREVIOUS)
+        .hint(crate::ui::tips::PREVIOUS)
         .clicked()
     {
         skip = -1;
@@ -986,7 +988,7 @@ fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Re
     let playing = app.playback_started && !app.player_state.paused;
     let loading = widgets::track_loading(cui.ctx());
     let play = widgets::play_button(&mut cui, &p, playing || loading, m.play)
-        .on_hover_text(crate::ui::tips::play(playing || loading));
+        .hint(crate::ui::tips::play(playing || loading));
     if loading {
         widgets::paint_spinner(
             &cui,
@@ -1000,7 +1002,7 @@ fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Re
         app.toggle_playback();
     }
     if widgets::icon_button(&mut cui, &p, Icon::SkipForwardFilled, m.icon, false)
-        .on_hover_text(crate::ui::tips::NEXT)
+        .hint(crate::ui::tips::NEXT)
         .clicked()
     {
         skip = 1;
@@ -1011,7 +1013,7 @@ fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Re
         Icon::Repeat
     };
     if widgets::icon_button(&mut cui, &p, repeat, m.icon, app.repeat != RepeatMode::Off)
-        .on_hover_text(crate::ui::tips::repeat(app.repeat))
+        .hint(crate::ui::tips::repeat(app.repeat))
         .clicked()
     {
         app.cycle_repeat();
@@ -1046,7 +1048,7 @@ fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Re
                 track.like == pressed,
                 true,
             )
-            .on_hover_text(crate::ui::tips::rate(up, track.like == pressed))
+            .hint(crate::ui::tips::rate(up, track.like == pressed))
             .clicked()
             {
                 rate = Some(RowAction::Rate {
@@ -1093,13 +1095,13 @@ fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Re
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
     if widgets::icon_button(&mut tui, &p, Icon::Minimize2, m.icon, false)
-        .on_hover_text(crate::ui::tips::EXIT_FULLSCREEN)
+        .hint(crate::ui::tips::EXIT_FULLSCREEN)
         .clicked()
     {
         app.fs_exit(ui.ctx());
     }
     if widgets::icon_button(&mut tui, &p, Icon::ListMusic, m.icon, app.fs.queue)
-        .on_hover_text(crate::ui::tips::QUEUE)
+        .hint(crate::ui::tips::QUEUE)
         .clicked()
     {
         app.fs.queue = !app.fs.queue;
@@ -1107,7 +1109,7 @@ fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Re
     // A song with no lyrics greys the button out and says so; the saved choice is untouched.
     let lyrics_button = tui.add_enabled_ui(!missing, |ui| {
         widgets::icon_button(ui, &p, Icon::MicVocal, m.icon, app.fs.lyrics && !missing)
-            .on_hover_text(crate::ui::tips::LYRICS)
+            .hint(crate::ui::tips::LYRICS)
     });
     if lyrics_button.inner.clicked() {
         app.fs.lyrics = !app.fs.lyrics;

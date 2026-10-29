@@ -14,7 +14,7 @@ const MAX_PX: f32 = 1280.0;
 
 pub fn panel(app: &mut App, ui: &mut egui::Ui) {
     let rect = ui.available_rect_before_wrap();
-    let radius = egui::CornerRadius::same(theme::PANEL_RADIUS);
+    let radius = egui::CornerRadius::same(theme::radii().panel);
     ui.painter().rect_filled(rect, radius, egui::Color32::BLACK);
     paint_frame(app, ui, rect, radius);
 

@@ -8,6 +8,7 @@ use crate::app::{App, PlaylistSort, Route};
 use crate::model::Playlist;
 use crate::ui::{ListClick, PAGE_ART_SIZE, failed, track_rows_quiet};
 use crate::widgets;
+use crate::widgets::Hint;
 
 pub fn page(app: &mut App, ui: &mut egui::Ui) {
     if app.playlist_loading {
@@ -107,7 +108,7 @@ fn suggestions(app: &mut App, ui: &mut egui::Ui) {
                         18.0,
                         false,
                     )
-                    .on_hover_text("Other suggestions")
+                    .hint("Other suggestions")
                     .clicked();
                 }
             });
@@ -567,13 +568,13 @@ fn edit_modal(app: &mut App, ui: &mut egui::Ui) {
             for (grow, alpha) in [(14.0, 24), (7.0, 40), (2.0, 60)] {
                 painter.rect_filled(
                     card.expand(grow),
-                    egui::CornerRadius::same(crate::theme::RADIUS + 2 + grow as u8),
+                    egui::CornerRadius::same(crate::theme::radii().popup + grow as u8),
                     egui::Color32::from_black_alpha(alpha),
                 );
             }
             painter.rect_filled(
                 card,
-                egui::CornerRadius::same(crate::theme::RADIUS + 2),
+                egui::CornerRadius::same(crate::theme::radii().popup),
                 p.overlay,
             );
 
@@ -712,13 +713,13 @@ fn confirm_modal(
             for (grow, alpha) in [(14.0, 24), (7.0, 40), (2.0, 60)] {
                 painter.rect_filled(
                     card.expand(grow),
-                    egui::CornerRadius::same(crate::theme::RADIUS + 2 + grow as u8),
+                    egui::CornerRadius::same(crate::theme::radii().popup + grow as u8),
                     egui::Color32::from_black_alpha(alpha),
                 );
             }
             painter.rect_filled(
                 card,
-                egui::CornerRadius::same(crate::theme::RADIUS + 2),
+                egui::CornerRadius::same(crate::theme::radii().popup),
                 p.overlay,
             );
 

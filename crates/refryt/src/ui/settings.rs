@@ -345,6 +345,7 @@ fn appearance(app: &mut App, ui: &mut egui::Ui) {
     let mut sheer = app.settings.opacity.sheer();
     let mut blur = app.settings.blur;
     let mut card_outline = app.settings.card_outline;
+    let mut corners = app.settings.corners;
     let mut scroll_fades = app.settings.scroll_fades;
     widgets::setting_group(ui, &p, Some("Window"), |ui, g| {
         // A slider, not chips: transparency is a continuum, and four names only ever made
@@ -423,6 +424,18 @@ fn appearance(app: &mut App, ui: &mut egui::Ui) {
             "A thin edge around each panel.",
             &mut card_outline,
         );
+        g.row(
+            ui,
+            "Corners",
+            "How rounded panels, covers and buttons are.",
+            |ui| {
+                for option in crate::theme::Corners::ALL.into_iter().rev() {
+                    if widgets::chip(ui, &p, option.label(), corners == option).clicked() {
+                        corners = option;
+                    }
+                }
+            },
+        );
         toggle_row(
             g,
             ui,
@@ -452,6 +465,7 @@ fn appearance(app: &mut App, ui: &mut egui::Ui) {
         s.light_theme = light_choice;
         s.adaptive_art_color = adaptive_art_color;
         s.card_outline = card_outline;
+        s.corners = corners;
         s.scroll_fades = scroll_fades;
     });
 }
@@ -947,7 +961,7 @@ fn premium_badge(ui: &mut egui::Ui, palette: &crate::theme::Palette) {
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     ui.painter().rect_filled(
         rect,
-        egui::CornerRadius::same(255),
+        crate::theme::pill(rect),
         palette.accent.gamma_multiply(0.16),
     );
     ui.painter()
