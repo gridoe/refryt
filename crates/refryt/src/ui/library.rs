@@ -381,12 +381,7 @@ fn album_grid(app: &mut App, ui: &mut egui::Ui) {
                 sub.push_str(" • ");
                 sub.push_str(y);
             }
-            let playing = app
-                .now
-                .track
-                .as_ref()
-                .is_some_and(|t| t.album_id.as_deref() == Some(al.id.as_str()))
-                && !app.now.paused;
+            let playing = crate::ui::album_active(&app.now, &al.id) && !app.now.paused;
             let card = widgets::art_card(
                 ui,
                 &app.palette,
@@ -460,7 +455,7 @@ fn playlist_grid(app: &mut App, ui: &mut egui::Ui) {
                 "",
                 widgets::ArtShape::Square,
                 None,
-                false,
+                crate::ui::playlist_active(&app.now, &pl.id) && !app.now.paused,
                 false,
             );
             // The corner button plays the playlist; a click anywhere else opens it.

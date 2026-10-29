@@ -496,20 +496,30 @@ impl PlayQueue {
         self.tracks = tracks;
         self.current = current.filter(|&i| i < self.tracks.len());
         self.resume = self.current.zip(resume);
-        self.shuffle = None;
-        self.set_shuffle(shuffle, chosen);
+        // Not `set_shuffle`: a shuffled session's list order says nothing of what played, so
+        // the whole queue is drawn again, as it was.
+        self.shuffle = shuffle.then(|| {
+            let mut order = self.draw(self.current, chosen);
+            order.pos = self.current.map(|_| 0);
+            order
+        });
     }
 
-    /// Turn shuffle on or off. On, the playing track stays and the rest are drawn into an order,
-    /// the listener's own songs before the radio's; off, the list order goes on from the track
-    /// playing.
+    /// Turn shuffle on or off. On, the songs before the playing one have played and stay behind
+    /// it, where Previous finds them in list order; the playing track stays and the rest are
+    /// drawn into an order, the listener's own songs before the radio's. Off, the list order goes
+    /// on from the track playing.
     pub(crate) fn set_shuffle(&mut self, on: bool, chosen: Chosen) {
         if on == self.shuffle.is_some() {
             return;
         }
         self.shuffle = on.then(|| {
             let mut order = self.draw(self.current, chosen);
-            order.pos = self.current.map(|_| 0);
+            if let Some(current) = self.current {
+                order.order.retain(|&i| i >= current);
+                order.order.splice(0..0, 0..current);
+                order.pos = Some(current);
+            }
             order
         });
     }

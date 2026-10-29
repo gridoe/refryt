@@ -847,31 +847,53 @@ const MARQUEE_DWELL_SECS: f64 = 0.6;
 const MARQUEE_SPEED: f32 = 30.0;
 /// Rest at each end of the travel before turning around.
 const MARQUEE_HOLD_SECS: f64 = 0.4;
+/// Rest at the far end, where the tail is in view: long enough to read it. A title a little too
+/// wide for the player bar gets there in about a second, and with the short rest it turned
+/// straight back before the end could be read.
+const MARQUEE_END_HOLD_SECS: f64 = 1.5;
 /// The click/hover height of a marquee line — the player bar's title uses it for its hit rect
 /// when the text fits and `marquee_line` draws no viewport of its own.
 pub(crate) const MARQUEE_HIT_H: f32 = 18.0;
 
-/// The strips a clipped line's viewport dissolves at: the trailing one always (the line
-/// overflows by definition), the leading one only once the line has scrolled and its head is
-/// cut off. Returns `(main, lead, trail)`, where `main` is what the solid paint keeps — either
-/// strip may come back empty, and on a viewport narrower than the fade they can overlap, which
+/// How deep each edge of a scrolling line dissolves, `(lead, trail)` from 0 (solid) to 1 (fully
+/// faded at the edge): in proportion to how much of the line is hidden past that edge, up to one
+/// fade's width. So the trailing fade thins out as the tail comes into view and is gone once the
+/// line has scrolled to its end, where it would otherwise sit over the last letters; the leading
+/// one deepens the same way as the head scrolls off, instead of popping in.
+fn dissolve_depths(offset: f32, max_off: f32) -> (f32, f32) {
+    let depth = |hidden: f32| (hidden / FADE_W).clamp(0.0, 1.0);
+    (depth(offset), depth(max_off - offset))
+}
+
+/// The strips a clipped line's viewport dissolves at, for the depths [`dissolve_depths`] gives:
+/// a strip only where its edge fades at all. Returns `(main, lead, trail)`, where `main` is what
+/// the solid paint keeps — on a viewport narrower than the fade the strips can overlap, which
 /// leaves `main` inverted and the caller paints nothing solid.
-fn dissolve_bands(clip: Rect, scrolled: bool, left: f32, right: f32) -> (Rect, Option<Rect>, Rect) {
-    let lead = scrolled.then(|| {
+fn dissolve_bands(
+    clip: Rect,
+    (lead_depth, trail_depth): (f32, f32),
+    left: f32,
+    right: f32,
+) -> (Rect, Option<Rect>, Option<Rect>) {
+    let lead = (lead_depth > 0.0).then(|| {
         Rect::from_min_max(
             clip.min,
             egui::pos2((left + FADE_W).min(clip.max.x), clip.max.y),
         )
     });
-    let trail = Rect::from_min_max(
-        egui::pos2((right - FADE_W).max(clip.min.x), clip.min.y),
-        clip.max,
-    );
+    let trail = (trail_depth > 0.0).then(|| {
+        Rect::from_min_max(
+            egui::pos2((right - FADE_W).max(clip.min.x), clip.min.y),
+            clip.max,
+        )
+    });
     let mut main = clip;
     if let Some(lead) = lead {
         main.min.x = main.min.x.max(lead.max.x);
     }
-    main.max.x = main.max.x.min(trail.min.x);
+    if let Some(trail) = trail {
+        main.max.x = main.max.x.min(trail.min.x);
+    }
     (main, lead, trail)
 }
 
@@ -886,8 +908,15 @@ fn dissolve_bands(clip: Rect, scrolled: bool, left: f32, right: f32) -> (Rect, O
 /// through the fade exactly as it shows through the text — so the dissolve works in every mode.
 ///
 /// `band` is the strip the cut eats into; `cut_at_start` puts the transparent end on the
-/// band's leading edge (the case once the line has scrolled) rather than its trailing one.
-fn fade_slices(ui: &mut Ui, band: Rect, cut_at_start: bool, mut paint: impl FnMut(&mut Ui, Rect)) {
+/// band's leading edge (the case once the line has scrolled) rather than its trailing one, and
+/// `depth` is how far the cut edge fades: 1 to nothing, less to a faint line still there.
+fn fade_slices(
+    ui: &mut Ui,
+    band: Rect,
+    cut_at_start: bool,
+    depth: f32,
+    mut paint: impl FnMut(&mut Ui, Rect),
+) {
     if band.width() < 1.0 {
         return;
     }
@@ -897,7 +926,7 @@ fn fade_slices(ui: &mut Ui, band: Rect, cut_at_start: bool, mut paint: impl FnMu
     let step = band.width() / FADE_STEPS as f32;
     for i in 0..FADE_STEPS {
         let f = i as f32 / (FADE_STEPS - 1) as f32;
-        let t = if cut_at_start { f } else { 1.0 - f };
+        let t = 1.0 - depth * (1.0 - if cut_at_start { f } else { 1.0 - f });
         let slice = Rect::from_min_max(
             egui::pos2(band.min.x + i as f32 * step, band.min.y),
             egui::pos2(band.min.x + (i + 1) as f32 * step, band.max.y),
@@ -1407,9 +1436,6 @@ struct MarqueeState {
     hover_since: Option<f64>,
     last_t: f64,
     hold_until: f64,
-    /// A link was hovered last frame. Links sit on top of the viewport and steal its
-    /// hover flag, so this keeps the scroll alive under the pointer.
-    link_hovered: bool,
 }
 
 /// One travel step with end flips: never leaves `0..=max_off`, and reports which way it is
@@ -1487,7 +1513,8 @@ pub fn marquee_line(
         vec2(max_width, MARQUEE_HIT_H),
     );
     let response = ui.interact(viewport, id, sense);
-    let hovered = response.hovered() || row_hovered;
+    // Geometric, not `hovered()`: see `paint_subtitle_marquee`.
+    let hovered = response.contains_pointer() || row_hovered;
     let now = ui.input(|i| i.time);
     let mut state: MarqueeState = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
     if (state.full_w - full).abs() > 0.5 {
@@ -1514,7 +1541,12 @@ pub fn marquee_line(
             let max_off = (full - max_width).max(0.0);
             let (offset, dir) = pingpong(state.offset, state.dir, max_off, MARQUEE_SPEED * dt);
             if (dir - state.dir).abs() > f32::EPSILON {
-                state.hold_until = now + MARQUEE_HOLD_SECS;
+                state.hold_until = now
+                    + if dir < 0.0 {
+                        MARQUEE_END_HOLD_SECS
+                    } else {
+                        MARQUEE_HOLD_SECS
+                    };
             }
             state.offset = offset;
             state.dir = dir;
@@ -1532,7 +1564,8 @@ pub fn marquee_line(
 
     let clip = ui.clip_rect().intersect(viewport);
     let line_pos = egui::pos2(pos.x - state.offset, pos.y);
-    let (main, lead, trail) = dissolve_bands(clip, state.offset > 0.5, pos.x, pos.x + max_width);
+    let depths = dissolve_depths(state.offset, full - max_width);
+    let (main, lead, trail) = dissolve_bands(clip, depths, pos.x, pos.x + max_width);
     let mut paint = |ui: &mut Ui, slice: Rect| {
         crate::emoji::paint_clipped_line(ui, slice, line_pos, text, font.clone(), color);
     };
@@ -1540,9 +1573,11 @@ pub fn marquee_line(
         paint(ui, main);
     }
     if let Some(lead) = lead {
-        fade_slices(ui, lead, true, &mut paint);
+        fade_slices(ui, lead, true, depths.0, &mut paint);
     }
-    fade_slices(ui, trail, false, &mut paint);
+    if let Some(trail) = trail {
+        fade_slices(ui, trail, false, depths.1, &mut paint);
+    }
     Some(response)
 }
 
@@ -1575,10 +1610,12 @@ pub fn subtitle_width(ui: &Ui, subtitle: &Subtitle<'_>, tail: Option<&str>) -> f
 /// Fits and this *is* `paint_subtitle`: same paint, same hit rects, no state. Overflows and
 /// the whole line scrolls ping-pong under a clipped viewport with a dissolve on each cut
 /// edge, fading the line's own alpha ([`fade_slices`]) so it holds up over the acrylic shell
-/// as well as the opaque one. Link hit rects ride the same offset as the paint, so artists
-/// stay clickable mid-scroll; a link hovered last frame counts as viewport hover, because
-/// stacked links take the hover flag from the viewport beneath them and the scroll would
-/// otherwise stop dead under the pointer.
+/// as well as the opaque one. Link hit rects ride the same offset as the paint, cut to the
+/// viewport, so artists stay clickable mid-scroll and a link scrolled out of view cannot be
+/// clicked. Whether the line is hovered is geometric — the pointer inside the viewport — not
+/// egui's hover flag: the links stacked on the viewport take that flag from it, and the
+/// last-frame bookkeeping that used to paper over it could miss a frame under an artist, and
+/// one missed frame snapped the scroll home.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_subtitle_marquee<'a>(
     ui: &mut Ui,
@@ -1631,7 +1668,7 @@ pub fn paint_subtitle_marquee<'a>(
         egui::pos2(pos.x, pos.y - MARQUEE_HIT_H / 2.0),
         vec2(max_width, MARQUEE_HIT_H),
     );
-    let over_view = ui.interact(viewport, id, Sense::hover()).hovered();
+    let over_view = ui.interact(viewport, id, Sense::hover()).contains_pointer();
     let now = ui.input(|i| i.time);
     let mut state: MarqueeState = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
     if (state.full_w - full).abs() > 0.5 {
@@ -1642,8 +1679,7 @@ pub fn paint_subtitle_marquee<'a>(
             ..Default::default()
         };
     }
-    // See the doc comment: the viewport loses hover to the links stacked on it.
-    let hovered = over_view || state.link_hovered || row_hovered;
+    let hovered = over_view || row_hovered;
     if hovered {
         if state.hover_since.is_none() {
             state.hover_since = Some(now);
@@ -1660,7 +1696,12 @@ pub fn paint_subtitle_marquee<'a>(
             let max_off = (full - max_width).max(0.0);
             let (offset, dir) = pingpong(state.offset, state.dir, max_off, MARQUEE_SPEED * dt);
             if (dir - state.dir).abs() > f32::EPSILON {
-                state.hold_until = now + MARQUEE_HOLD_SECS;
+                state.hold_until = now
+                    + if dir < 0.0 {
+                        MARQUEE_END_HOLD_SECS
+                    } else {
+                        MARQUEE_HOLD_SECS
+                    };
             }
             state.offset = offset;
             state.dir = dir;
@@ -1676,13 +1717,13 @@ pub fn paint_subtitle_marquee<'a>(
     state.full_w = full;
 
     let clip = ui.clip_rect().intersect(viewport);
-    let (main, lead, trail) = dissolve_bands(clip, state.offset > 0.5, pos.x, pos.x + max_width);
+    let depths = dissolve_depths(state.offset, full - max_width);
+    let (main, lead, trail) = dissolve_bands(clip, depths, pos.x, pos.x + max_width);
     // Layout and interaction first: the paint below re-runs the layout once per dissolve slice,
     // and the links must not be re-registered for each one. No early break — the clip rect does
     // the cutting, scrolled or not.
     let mut x = pos.x - state.offset;
     let mut clicked = None;
-    let mut link_hovered = false;
     // (x, text, width, colour, underlined): the underline only while its link is hovered.
     let mut pieces: Vec<(f32, &str, f32, Color32, bool)> = Vec::with_capacity(parts.len() * 2);
     for (i, part) in parts.iter().enumerate() {
@@ -1695,10 +1736,10 @@ pub fn paint_subtitle_marquee<'a>(
         let mut colour = base_colour;
         let mut underlined = false;
         if let Some(target) = part.target {
-            let hit = Rect::from_min_size(egui::pos2(x, pos.y - 8.0), vec2(w, 16.0));
+            let hit =
+                Rect::from_min_size(egui::pos2(x, pos.y - 8.0), vec2(w, 16.0)).intersect(viewport);
             let r = ui.interact(hit, ui.id().with((id, i)), Sense::click());
             if r.hovered() {
-                link_hovered = true;
                 colour = palette.text;
                 underlined = true;
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1710,7 +1751,6 @@ pub fn paint_subtitle_marquee<'a>(
         pieces.push((x, part.text, w, colour, underlined));
         x += w;
     }
-    state.link_hovered = link_hovered;
     ui.ctx().data_mut(|d| d.insert_temp(id, state));
 
     let mut paint = |ui: &mut Ui, slice: Rect| {
@@ -1736,9 +1776,11 @@ pub fn paint_subtitle_marquee<'a>(
         paint(ui, main);
     }
     if let Some(lead) = lead {
-        fade_slices(ui, lead, true, &mut paint);
+        fade_slices(ui, lead, true, depths.0, &mut paint);
     }
-    fade_slices(ui, trail, false, &mut paint);
+    if let Some(trail) = trail {
+        fade_slices(ui, trail, false, depths.1, &mut paint);
+    }
     clicked
 }
 
@@ -5376,30 +5418,47 @@ mod tests {
         assert_eq!(pingpong(0.0, 1.0, 0.0, 0.0), (0.0, -1.0));
     }
 
-    /// The dissolve strips: the trailing one always, the leading one only after the line has
-    /// scrolled, and the solid paint keeps whatever is between them.
+    /// The dissolve strips: one at each edge with text hidden past it, and the solid paint keeps
+    /// whatever is between them.
     #[test]
     fn a_dissolve_keeps_the_middle_solid() {
         let clip = egui::Rect::from_min_max(egui::pos2(100.0, 0.0), egui::pos2(300.0, 18.0));
         // At rest: trailing only, one fade wide.
-        let (main, lead, trail) = dissolve_bands(clip, false, 100.0, 300.0);
+        let (main, lead, trail) = dissolve_bands(clip, (0.0, 1.0), 100.0, 300.0);
         assert!(lead.is_none());
-        assert_eq!(trail.min.x, 276.0);
+        assert_eq!(trail.unwrap().min.x, 276.0);
         assert_eq!(main.min.x, 100.0);
         assert_eq!(main.max.x, 276.0);
-        // Scrolled: both, and the solid strip is exactly what is left between them.
-        let (main, lead, trail) = dissolve_bands(clip, true, 100.0, 300.0);
+        // Mid-scroll: both, and the solid strip is exactly what is left between them.
+        let (main, lead, trail) = dissolve_bands(clip, (1.0, 1.0), 100.0, 300.0);
         assert_eq!(lead.unwrap().max.x, 124.0);
-        assert_eq!(trail.min.x, 276.0);
+        assert_eq!(trail.unwrap().min.x, 276.0);
         assert_eq!(
             main,
             egui::Rect::from_min_max(egui::pos2(124.0, 0.0), egui::pos2(276.0, 18.0))
         );
+        // Scrolled to the end: leading only, and the tail paints solid.
+        let (main, lead, trail) = dissolve_bands(clip, (1.0, 0.0), 100.0, 300.0);
+        assert!(lead.is_some() && trail.is_none());
+        assert_eq!(main.max.x, 300.0);
         // A viewport narrower than one fade: the strips meet and the solid strip inverts,
         // which the painters read as "nothing solid to draw".
         let narrow = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(30.0, 18.0));
-        let (main, _, _) = dissolve_bands(narrow, true, 0.0, 30.0);
+        let (main, _, _) = dissolve_bands(narrow, (1.0, 1.0), 0.0, 30.0);
         assert!(main.width() <= 0.0);
+    }
+
+    /// Each edge fades as deep as the text hidden past it, up to one fade's width: none at the
+    /// head at rest, none at the tail at the end of travel.
+    #[test]
+    fn a_dissolve_fades_only_where_text_is_hidden() {
+        assert_eq!(dissolve_depths(0.0, 100.0), (0.0, 1.0));
+        assert_eq!(dissolve_depths(100.0, 100.0), (1.0, 0.0));
+        assert_eq!(dissolve_depths(50.0, 100.0), (1.0, 1.0));
+        assert_eq!(dissolve_depths(12.0, 100.0), (0.5, 1.0));
+        assert_eq!(dissolve_depths(94.0, 100.0), (1.0, 0.25));
+        // Overflowing by less than a fade: the trailing fade is only as deep as the overflow.
+        assert_eq!(dissolve_depths(0.0, 6.0), (0.0, 0.25));
     }
 
     /// The corner walk the header wash and the corner repaint share: full radius at the edge,
