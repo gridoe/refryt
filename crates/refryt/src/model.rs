@@ -916,6 +916,14 @@ fn is_expanding_playlist_id(id: &str) -> bool {
     bare_playlist_id(id).starts_with("RD")
 }
 
+/// One of YouTube's radio mixes — "My Mix", "Discover Mix", a song's or a playlist's radio —
+/// which the site plays through its radio, with Up next's filters. Its curated `RDCLAK`
+/// playlists are expanding ids too, but they are fixed lists that come with no filters, so they
+/// play as a playlist does.
+pub fn is_radio_mix_id(id: &str) -> bool {
+    is_expanding_playlist_id(id) && !bare_playlist_id(id).starts_with("RDCLAK")
+}
+
 /// Lyrics for a track: either time-synced or plain text.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Lyrics {
@@ -1573,6 +1581,11 @@ mod tests {
         assert!(is_expanding_playlist_id("RDCLAK5uy_khy"));
         assert!(!is_expanding_playlist_id("VLPLabc"));
         assert!(!is_expanding_playlist_id("VLLM"));
+        // Played through the radio: personal mixes and radios, not the curated playlists.
+        assert!(is_radio_mix_id("RDTMAK5uy_abc"));
+        assert!(is_radio_mix_id("VLRDAMPLPLabc"));
+        assert!(!is_radio_mix_id("VLRDCLAK5uy_khy"));
+        assert!(!is_radio_mix_id("PLabc"));
     }
 
     /// The rail's second line: your own lists show how much is in them — as does Liked Music,

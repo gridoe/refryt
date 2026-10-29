@@ -158,6 +158,36 @@ pub struct Store {
     /// Whether the in-app video view was open. Only ever restored for a track that has a video.
     #[serde(default)]
     pub video_open: bool,
+    /// The queue's radio: which songs were the listener's, how it continues, and its filters.
+    /// An older file without it restores the whole queue as chosen, with a fresh radio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radio: Option<PersistedRadio>,
+}
+
+/// [`crate::app::Radio`] as written to disk.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PersistedRadio {
+    pub seed: String,
+    pub chosen: Vec<String>,
+    /// Not fetched yet: seeded from the queue's end once it plays.
+    #[serde(default)]
+    pub pending: bool,
+    /// The next page's token while it flows. A stale one is no loss: following it falls back to
+    /// a fresh radio from the song playing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<PersistedFilter>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PersistedFilter {
+    pub label: String,
+    pub playlist_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<String>,
+    #[serde(default)]
+    pub selected: bool,
 }
 
 /// Write the store, creating the config dir if needed.

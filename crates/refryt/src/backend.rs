@@ -331,6 +331,16 @@ pub enum Event {
         seed: String,
         error: String,
     },
+    /// One of the radio's filters, its first page. `playlist_id` is the filter's own, which the
+    /// app matches against the one it asked for.
+    RadioFiltered {
+        playlist_id: String,
+        queue: crate::innertube::WatchQueue,
+    },
+    RadioFilterFailed {
+        playlist_id: String,
+        error: String,
+    },
     /// Lyrics for the now-playing track: synced from LRCLIB when it had them, else plain text
     /// from InnerTube.
     LyricsLoaded {
@@ -570,6 +580,7 @@ impl Event {
             | Event::MixFailed { error, .. }
             | Event::MixMoreFailed { error, .. }
             | Event::MixSeedFailed { error, .. }
+            | Event::RadioFilterFailed { error, .. }
             | Event::LyricsFailed { error, .. }
             | Event::RatingFailed { error, .. }
             | Event::LibraryToggleFailed { error, .. }
@@ -1801,6 +1812,23 @@ impl Backend {
                 },
                 Err(e) => Event::MixFailed {
                     seed: playlist_id,
+                    error: format!("{e:#}"),
+                },
+            };
+            Self::emit(&tx, &ctx, event);
+        });
+    }
+
+    /// One of the radio's filters (Up next's "All ▾"): the same `next` call, with the filter's
+    /// own playlist id and params.
+    pub fn filter_radio(&self, target: crate::model::WatchTarget) {
+        let (api, tx, ctx) = (Arc::clone(&self.api), self.tx.clone(), self.ctx.clone());
+        self.rt.spawn(async move {
+            let playlist_id = target.playlist_id.clone();
+            let event = match api.watch(&target).await {
+                Ok(queue) => Event::RadioFiltered { playlist_id, queue },
+                Err(e) => Event::RadioFilterFailed {
+                    playlist_id,
                     error: format!("{e:#}"),
                 },
             };

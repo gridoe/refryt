@@ -1852,6 +1852,57 @@ pub struct WatchQueue {
     /// The now-playing song's own rating, from the player overlay. Rows carry no like button,
     /// so this is the only way a mix knows whether its seed is liked. `None` on continuations.
     pub like: Option<LikeStatus>,
+    /// The chips over the site's Up next ("All", "Familiar", "Discover", a decade, a genre),
+    /// each another radio for the same song. Empty on continuations, which carry none.
+    pub filters: Vec<QueueFilter>,
+}
+
+/// One of a radio's [`WatchQueue::filters`]: the same radio narrowed one way, asked for with
+/// its own `watchEndpoint`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueueFilter {
+    pub label: String,
+    pub target: crate::model::WatchTarget,
+    /// The one this page is: "All" on a fresh radio.
+    pub selected: bool,
+}
+
+/// `musicQueueRenderer/subHeaderChipCloud/chipCloudRenderer/chips[]`. Each chip is a
+/// `queueUpdateCommand` whose `fetchContentsCommand` is a plain watch endpoint; a chip without
+/// one would do nothing, so it is left out.
+fn queue_filters(root: &Value) -> Vec<QueueFilter> {
+    let Some(chips) = find_key(root, "musicQueueRenderer")
+        .and_then(|q| q.pointer("/subHeaderChipCloud/chipCloudRenderer/chips"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    chips
+        .iter()
+        .filter_map(|c| {
+            let chip = c.get("chipCloudChipRenderer")?;
+            let label = non_empty(chip.get("text").map(text)?)?;
+            let watch = chip.pointer(
+                "/navigationEndpoint/queueUpdateCommand/fetchContentsCommand/watchEndpoint",
+            )?;
+            let playlist_id = watch.get("playlistId").and_then(Value::as_str)?;
+            Some(QueueFilter {
+                label,
+                target: crate::model::WatchTarget {
+                    video_id: None,
+                    playlist_id: playlist_id.to_owned(),
+                    params: watch
+                        .get("params")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                },
+                selected: chip
+                    .get("isSelected")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            })
+        })
+        .collect()
 }
 
 /// The `next` endpoint's watch queue, out of
@@ -1890,6 +1941,7 @@ pub fn parse_watch_queue(root: &Value) -> WatchQueue {
         tracks,
         next,
         like: playback_like(root),
+        filters: queue_filters(root),
     }
 }
 

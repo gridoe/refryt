@@ -740,6 +740,10 @@ pub struct TrackRow<'a> {
     /// while the pointer is over the row the number gives way to a play/pause glyph, since the
     /// cover's own hover play button is not there to carry that affordance.
     pub hide_art: bool,
+    /// Start the cover closer to the row's own left edge — the edge of its hover and selection
+    /// fill: [`theme::ROW_LEFT_INSET_TIGHT`] instead of [`theme::ROW_LEFT_INSET`]. The queue sets
+    /// it, where the narrow card makes every point of the row count.
+    pub tight: bool,
     /// Distinguishes this row's interactive pieces from its neighbours'.
     pub id_salt: usize,
     /// Right-click menu. `None` for rows that are not songs.
@@ -2377,6 +2381,32 @@ fn badge_font() -> egui::FontId {
     theme::medium(11.0)
 }
 
+/// A row this narrow (the open queue on a small window) shrinks its number column and cover so
+/// the title keeps some room.
+fn narrow_row(width: f32) -> bool {
+    width < 340.0
+}
+
+/// The cover's side in a row `width` wide.
+fn row_art_size(width: f32) -> f32 {
+    if narrow_row(width) {
+        32.0
+    } else {
+        theme::ART_SIZE
+    }
+}
+
+/// A row's height. A tight row (the queue) is its cover plus [`theme::ROW_FILL_GAP_TIGHT`] above
+/// and below, so its hover fill hugs the cover and the songs sit closer together; every other row
+/// is [`theme::ROW_HEIGHT`]. The list's virtual layout reads this too, so the two agree.
+pub fn row_height(tight: bool, width: f32) -> f32 {
+    if tight {
+        row_art_size(width) + 2.0 * theme::ROW_FILL_GAP_TIGHT
+    } else {
+        theme::ROW_HEIGHT
+    }
+}
+
 /// A single track row: number (optional), art, title with an explicit badge, artist with play
 /// count, duration.
 ///
@@ -2398,6 +2428,7 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
         art,
         shape,
         hide_art,
+        tight,
         id_salt,
         menu,
         like,
@@ -2412,15 +2443,19 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
     // came from an editable playlist, and egui only treats a press as a drag once the pointer
     // has actually moved, so an ordinary click is unaffected.
     let (rect, response) = ui.allocate_exact_size(
-        vec2(ui.available_width(), theme::ROW_HEIGHT),
+        vec2(
+            ui.available_width(),
+            row_height(tight, ui.available_width()),
+        ),
         Sense::click_and_drag(),
     );
-    let right_pad = 20.0;
+    // The queue's duration sits nearer the fill's right edge, as its cover does the left.
+    let right_pad = if tight { 10.0 } else { 20.0 };
     // A narrow row — the open queue on a small window — compresses instead of starving:
     // the number column and the art yield first, and what they give back is the title's
     // room. A full-size art and a 30pt number column left 21pt of it on a 215pt card,
     // which is one ellipsis. Decided here, because the duration slot below leans on it.
-    let narrow = rect.width() < 340.0;
+    let narrow = narrow_row(rect.width());
     // Below this the hover thumbs stop getting a reserved zone of their own and are meant to take
     // the duration's corner instead, the same fallback the narrow queue rows already used. A zone
     // costs 68pt, and a row this size cannot pay it without clipping its own subtitle — the
@@ -2473,7 +2508,12 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
     } else {
         0.0
     };
-    let row_art = if narrow { 32.0 } else { theme::ART_SIZE };
+    let row_art = row_art_size(rect.width());
+    let left_inset = if tight {
+        theme::ROW_LEFT_INSET_TIGHT
+    } else {
+        theme::ROW_LEFT_INSET
+    };
     // A video still keeps its 16:9 aspect instead of being squeezed into the square slot.
     // Hidden art leaves a zero-width slot rather than its own branch: the number column and
     // the title's own 12pt gap then place the text exactly as they would beside a cover.
@@ -2485,7 +2525,7 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
         row_art
     };
     let art_rect = Rect::from_center_size(
-        rect.left_center() + vec2(theme::ROW_LEFT_INSET + num_w + art_w / 2.0, 0.0),
+        rect.left_center() + vec2(left_inset + num_w + art_w / 2.0, 0.0),
         vec2(art_w, row_art),
     );
 
@@ -2498,7 +2538,7 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
     // double-click-to-play keeps the same one exception it always had.
     let number_play = hide_art && !narrow && number.is_some() && menu.is_some();
     let number_rect = Rect::from_min_size(
-        egui::pos2(rect.left() + theme::ROW_LEFT_INSET, rect.top()),
+        egui::pos2(rect.left() + left_inset, rect.top()),
         vec2(theme::ROW_NUMBER_W, rect.height()),
     );
     // Double-click-to-play: the row's own track is the id to select or play. A row without a
@@ -2578,7 +2618,7 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
                 crate::model::ChartTrend::Steady => (None, palette.dim),
                 crate::model::ChartTrend::Unknown => (None, palette.dim),
             };
-            let label_x = rect.left() + theme::ROW_LEFT_INSET + num_w - theme::ROW_NUMBER_GAP;
+            let label_x = rect.left() + left_inset + num_w - theme::ROW_NUMBER_GAP;
             ui.painter().text(
                 egui::pos2(label_x, rect.center().y),
                 egui::Align2::RIGHT_CENTER,
@@ -2623,7 +2663,7 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
                     ui,
                     Rect::from_center_size(
                         egui::pos2(
-                            rect.left() + theme::ROW_LEFT_INSET + num_w / 2.0 + nudge,
+                            rect.left() + left_inset + num_w / 2.0 + nudge,
                             rect.center().y,
                         ),
                         vec2(glyph, glyph),
@@ -2632,7 +2672,7 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
             } else {
                 ui.painter().text(
                     egui::pos2(
-                        rect.left() + theme::ROW_LEFT_INSET + num_w - theme::ROW_NUMBER_GAP,
+                        rect.left() + left_inset + num_w - theme::ROW_NUMBER_GAP,
                         rect.center().y,
                     ),
                     egui::Align2::RIGHT_CENTER,
@@ -3394,6 +3434,8 @@ pub(crate) const MENU_WIDTH: f32 = 236.0;
 /// How wide a [`dropdown`]'s popup is. Fixed for the same reason a menu is — nine scheme
 /// labels should not make the box dance open to the width of whichever is longest.
 const DROPDOWN_WIDTH: f32 = 216.0;
+/// One line weight for a [`text_dropdown`]'s chevron, its spinner and its menu's tick.
+const COMPACT_STROKE: f32 = 1.5;
 
 /// Like/Dislike thumbs in the row's right-hand slot, left of the duration.
 ///
@@ -4295,15 +4337,132 @@ pub fn icon_dropdown(
     // The size of the icons it stands beside — Shuffle, Mix — so the sort control never reads
     // as the small one of the row.
     let response = icon_button(ui, palette, icon, 20.0, active);
+    text_options(ui, palette, id, &response, current, options, false)
+}
 
+/// A dropdown triggered by its own current choice in quiet text with a chevron, for a line that
+/// already carries a label of its own (the queue's "Next up", with the radio's filter at its
+/// right end). `busy` swaps the chevron for a spinner while the choice is being applied. Returns
+/// the index of the option clicked this frame, same contract as [`dropdown`].
+pub fn text_dropdown(
+    ui: &mut Ui,
+    palette: &Palette,
+    id: egui::Id,
+    current: &str,
+    options: &[&str],
+    busy: bool,
+) -> Option<usize> {
+    let font = theme::semibold(12.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(current.to_owned(), font, palette.secondary);
+    let chevron_w = 16.0;
+    let size = vec2(galley.size().x + chevron_w, galley.size().y.max(16.0));
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let t = lit(ui, &response);
+        let fg = mix(palette.secondary, palette.text, t);
+        let nudge = press_offset(&response);
+        ui.painter().galley(
+            egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0) + nudge,
+            galley,
+            fg,
+        );
+        let c = rect.right_center() - vec2(6.0, 0.0) + nudge;
+        if busy {
+            paint_spinner(ui, c, 4.5, COMPACT_STROKE, fg);
+        } else {
+            // Lucide's chevron-down, drawn at the spinner's stroke: the icon itself, rasterised
+            // this small, came out a hairline fainter than the spinner that takes its place.
+            ui.painter().add(egui::Shape::line(
+                vec![
+                    c + vec2(-3.5, -1.75),
+                    c + vec2(0.0, 1.75),
+                    c + vec2(3.5, -1.75),
+                ],
+                egui::Stroke::new(COMPACT_STROKE, fg),
+            ));
+        }
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+    text_options(ui, palette, id, &response, current, options, true)
+}
+
+/// A small ✕: drawn rather than the icon's 12 px raster, which came out spiky — two short
+/// strokes with rounded ends read softer at this size. Recent searches' remove button and Up
+/// next's clear.
+///
+/// `half` is half its width: 3.5 beside a search, 3.0 beside a section label, where it sits
+/// next to [`text_dropdown`]'s flatter chevron.
+pub fn paint_x(painter: &egui::Painter, c: egui::Pos2, half: f32, colour: Color32) {
+    let stroke = egui::Stroke::new(COMPACT_STROKE, colour);
+    for d in [vec2(half, half), vec2(half, -half)] {
+        painter.line_segment([c - d, c + d], stroke);
+        for end in [c - d, c + d] {
+            painter.circle_filled(end, 0.75, colour);
+        }
+    }
+}
+
+/// A quiet ✕ button for a section label, beside it as [`text_dropdown`]'s chevron is: the
+/// secondary colour at rest, a round backing under the pointer, as recent searches' ✕ has.
+pub fn label_x(ui: &mut Ui, palette: &Palette) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let t = lit(ui, &response);
+        if t > 0.001 {
+            ui.painter().circle_filled(
+                rect.center(),
+                10.0,
+                mix(palette.surface_hover, palette.surface_active, t),
+            );
+        }
+        paint_x(
+            ui.painter(),
+            rect.center() + press_offset(&response),
+            3.0,
+            mix(palette.secondary, palette.text, t),
+        );
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+    response
+}
+
+/// The popup under an [`icon_dropdown`] or a [`text_dropdown`]: one ticked text row per option,
+/// toggled by `response`'s click. `compact` is the [`text_dropdown`]'s: shorter rows in a
+/// smaller face, and only as wide as its longest option, so it opens right under the pointer
+/// instead of reaching far to the left of it.
+fn text_options(
+    ui: &mut Ui,
+    palette: &Palette,
+    id: egui::Id,
+    response: &egui::Response,
+    current: &str,
+    options: &[&str],
+    compact: bool,
+) -> Option<usize> {
+    let width = if compact {
+        let widest = options
+            .iter()
+            .map(|o| text_width(ui, o, &theme::medium(12.0)))
+            .fold(0.0, f32::max);
+        // The label's inset, the tick's room, and the frame's own margins.
+        (widest + 12.0 + 28.0 + 12.0).clamp(110.0, DROPDOWN_WIDTH)
+    } else {
+        DROPDOWN_WIDTH
+    };
     let mut choice = None;
-    let popup = egui::Popup::from_response(&response)
+    let popup = egui::Popup::from_response(response)
         .id(id)
         .kind(egui::PopupKind::Menu)
         .frame(menu_frame(ui, palette))
         .layout(egui::Layout::top_down_justified(egui::Align::Min))
         .align(egui::RectAlign::BOTTOM_END)
-        .width(DROPDOWN_WIDTH)
+        .width(width)
         .gap(4.0)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .open_memory(if response.clicked() {
@@ -4313,7 +4472,7 @@ pub fn icon_dropdown(
         });
     popup.show(|mui| {
         for (i, label) in options.iter().enumerate() {
-            let row = text_dropdown_row(mui, palette, label, current == *label);
+            let row = text_dropdown_row(mui, palette, label, current == *label, compact);
             if row.clicked() {
                 choice = Some(i);
                 mui.close();
@@ -4330,8 +4489,13 @@ fn text_dropdown_row(
     palette: &Palette,
     label: &str,
     selected: bool,
+    compact: bool,
 ) -> egui::Response {
-    let height = 32.0;
+    let (height, font, inset) = if compact {
+        (26.0, theme::medium(12.0), 12.0)
+    } else {
+        (32.0, theme::medium(13.0), 14.0)
+    };
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
     if ui.is_rect_visible(rect) {
@@ -4344,17 +4508,29 @@ fn text_dropdown_row(
         let nudge = press_offset(&response);
         crate::emoji::paint_line(
             ui,
-            rect.left_center() + vec2(14.0, 0.0) + nudge,
+            rect.left_center() + vec2(inset, 0.0) + nudge,
             &truncate_to(
                 ui,
                 label,
-                theme::medium(13.0),
-                (rect.width() - 14.0 - 24.0).max(0.0),
+                font.clone(),
+                (rect.width() - inset - 24.0).max(0.0),
             ),
-            theme::medium(13.0),
+            font,
             fg,
         );
-        if selected {
+        if selected && compact {
+            // Lucide's check, at the weight of the chevron that opened this menu: the 2pt tick
+            // below outweighed the compact menu's 12pt text.
+            let c = rect.right_center() - vec2(13.0, 0.0) + nudge;
+            ui.painter().add(egui::Shape::line(
+                vec![
+                    c + vec2(-4.0, 0.0),
+                    c + vec2(-1.25, 2.75),
+                    c + vec2(4.0, -2.75),
+                ],
+                egui::Stroke::new(COMPACT_STROKE, palette.accent),
+            ));
+        } else if selected {
             // The same drawn tick `dropdown_row` uses, not "✓" — see its own comment for why.
             let c = rect.right_center() - vec2(14.0, 1.0) + nudge;
             ui.painter().add(egui::Shape::line(
@@ -5870,6 +6046,7 @@ mod tests {
                         art: None,
                         shape: ArtShape::Square,
                         hide_art: false,
+                        tight: false,
                         id_salt: 0,
                         menu: Some(RowMenu {
                             track: &track,
@@ -6098,6 +6275,7 @@ mod tests {
                         art: None,
                         shape: ArtShape::Square,
                         hide_art: true,
+                        tight: false,
                         id_salt: 0,
                         menu: Some(RowMenu {
                             track: &track,
@@ -6231,6 +6409,7 @@ mod tests {
                         art: None,
                         shape: ArtShape::Square,
                         hide_art: true,
+                        tight: false,
                         id_salt: 0,
                         menu: Some(RowMenu {
                             track: &track,
