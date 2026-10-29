@@ -2404,6 +2404,32 @@ fn parse_artist_songs(shelf: &Value, artist_name: &str, artist_id: &str) -> Vec<
         .collect()
 }
 
+/// The carousels in a two-column page's side column: an album's "Other versions" and "Releases
+/// for you". Its track list is a `musicShelfRenderer` in the same list and is not one of them.
+pub fn parse_secondary_carousels(root: &Value) -> Vec<Shelf> {
+    carousels_in(root.pointer(
+        "/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents",
+    ))
+}
+
+/// The carousels in a section-list continuation: a playlist's "Related playlists", fetched with
+/// its [`PlaylistPage::extras`] token.
+pub fn parse_continuation_carousels(root: &Value) -> Vec<Shelf> {
+    carousels_in(root.pointer("/continuationContents/sectionListContinuation/contents"))
+}
+
+fn carousels_in(contents: Option<&Value>) -> Vec<Shelf> {
+    contents
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|i| parse_carousel(i.get("musicCarouselShelfRenderer")?))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// One titled carousel — "Albums", "Videos", "Fans might also like", "New releases" — as a
 /// [`Shelf`].
 ///
@@ -2573,7 +2599,9 @@ fn parse_card(item: &Value) -> Option<Entry> {
         Target::Browse { id, page } if page == PAGE_ALBUM => Some(Entry::Album(AlbumRef {
             id,
             title,
-            artist: String::new(),
+            // The linked names in "Single • LISA". An artist's own discography reads
+            // "Single • 2024", with no link, and stays empty.
+            artist: artist_line(&segs).unwrap_or_default(),
             year,
             // "Album", "Single" or "EP" as YouTube labels it, which is what lets a caller split
             // a full discography by type.
@@ -2695,9 +2723,62 @@ mod tests {
             // `parse_mood_playlists` walks instead of `ytmapi-rs`'s own typed parser, which
             // throws on some other mood/genre chip's section shape.
             "mood-playlists" => include_str!("../fixtures/mood-playlists-chill.json"),
+            // An album's raw browse (anonymous, 2026-10-28), trimmed to the carousels in its side
+            // column: "Other versions" (one card) and "Releases for you" (ten).
+            "album-extras" => include_str!("../fixtures/album-extras.json"),
+            // A public playlist's `secondaryContents` continuation (anonymous, 2026-10-28): the
+            // "Related playlists" carousel, ten playlists.
+            "playlist-related" => include_str!("../fixtures/playlist-related.json"),
             other => panic!("no fixture {other}"),
         };
         serde_json::from_str(raw).expect("fixture is valid json")
+    }
+
+    /// The chips over the site's Up next, signed out and signed in: every one a radio of its own,
+    /// with "All" the page that came back.
+    #[test]
+    fn a_radio_carries_its_queue_filters() {
+        for name in ["watch", "wrapped"] {
+            let q = parse_watch_queue(&json(name));
+            assert!(q.filters.len() >= 5, "{name}: {:?}", q.filters);
+            assert_eq!(q.filters[0].label, "All");
+            assert!(q.filters[0].selected);
+            assert_eq!(q.filters.iter().filter(|f| f.selected).count(), 1);
+            assert!(q.filters.iter().any(|f| f.label == "Discover"));
+            assert!(
+                q.filters
+                    .iter()
+                    .all(|f| f.target.playlist_id.starts_with("RD") && f.target.params.is_some())
+            );
+        }
+        assert!(parse_watch_queue(&json("watch-more")).filters.is_empty());
+    }
+
+    #[test]
+    fn an_album_brings_its_other_versions_and_releases_for_you() {
+        let shelves = parse_secondary_carousels(&json("album-extras"));
+        let titles: Vec<&str> = shelves.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(titles, ["Other versions", "Releases for you"]);
+        assert!(
+            shelves
+                .iter()
+                .all(|s| s.items.iter().all(|e| matches!(e, Entry::Album(_))))
+        );
+        assert_eq!(shelves[1].items.len(), 10);
+    }
+
+    #[test]
+    fn a_playlist_brings_its_related_playlists() {
+        let shelves = parse_continuation_carousels(&json("playlist-related"));
+        assert_eq!(shelves.len(), 1);
+        assert_eq!(shelves[0].title, "Related playlists");
+        assert_eq!(shelves[0].items.len(), 10);
+        assert!(
+            shelves[0]
+                .items
+                .iter()
+                .all(|e| matches!(e, Entry::Playlist(_)))
+        );
     }
 
     /// The two live layouts of the same query, so every search test runs against both.
@@ -4310,6 +4391,29 @@ mod tests {
         assert!(
             !titles.iter().any(|t| t.contains("Tastebuilder")),
             "{titles:?}"
+        );
+    }
+
+    /// A release card on Home names its artists and its type.
+    #[test]
+    fn a_release_card_names_its_artist() {
+        let shelves = parse_browse_shelves(&json("home"));
+        let album = |title: &str| {
+            shelves
+                .iter()
+                .flat_map(|s| &s.items)
+                .find_map(|e| match e {
+                    Entry::Album(a) if a.title == title => Some(a.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no card {title}"))
+        };
+        let single = album("SaWaDiKa");
+        assert_eq!(single.artist, "LISA");
+        assert_eq!(single.kind.as_deref(), Some("Single"));
+        assert_eq!(
+            album("You Know My Name (Live)").artist,
+            "Tasha Cobbs Leonard, Le'Andria Johnson"
         );
     }
 

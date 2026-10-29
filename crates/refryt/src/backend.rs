@@ -166,6 +166,12 @@ pub enum Event {
         id: String,
         suggestions: Option<crate::innertube::Suggestions>,
     },
+    /// The carousels under someone else's playlist ("Related playlists"). Empty when there were
+    /// none or the fetch failed; the page then shows nothing there.
+    PlaylistRelated {
+        id: String,
+        shelves: Vec<crate::model::Shelf>,
+    },
     /// An album/playlist card's own play button was pressed — its tracks, fetched just to
     /// start playing them, not to open the page. Deliberately its own event rather than
     /// reusing `AlbumLoaded`/`PlaylistLoaded`: those are guarded by `album_is_for`/
@@ -526,6 +532,7 @@ impl Event {
                 | Event::PlaylistLoaded { .. }
                 | Event::PlaylistFailed { .. }
                 | Event::PlaylistSuggestions { .. }
+                | Event::PlaylistRelated { .. }
                 | Event::LibraryLoaded { .. }
                 | Event::LibraryFailed { .. }
                 | Event::ExploreLoaded { .. }
@@ -1465,6 +1472,21 @@ impl Backend {
                 }
             };
             Self::emit(&tx, &ctx, Event::PlaylistSuggestions { id, suggestions });
+        });
+    }
+
+    /// The Related playlists under someone else's playlist.
+    pub fn fetch_playlist_related(&self, id: String, token: String) {
+        let (api, tx, ctx) = (Arc::clone(&self.api), self.tx.clone(), self.ctx.clone());
+        self.rt.spawn(async move {
+            let shelves = match api.playlist_related(token).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(%id, error = %format!("{e:#}"), "could not load related playlists");
+                    Vec::new()
+                }
+            };
+            Self::emit(&tx, &ctx, Event::PlaylistRelated { id, shelves });
         });
     }
 

@@ -50,7 +50,36 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         track_list(app, ui);
         suggestions(app, ui);
+        related(app, ui);
     });
+}
+
+/// "Related playlists" under someone else's playlist, as YouTube Music shows them. Only once the
+/// whole list is in, for the same reason as [`suggestions`].
+fn related(app: &mut App, ui: &mut egui::Ui) {
+    let complete = app
+        .playlist
+        .as_ref()
+        .is_some_and(|p| !p.editable && p.tracks.next.is_none());
+    if !complete {
+        return;
+    }
+    // A snapshot: the carousel needs `&mut App`.
+    let shelves = app.playlist_related.clone();
+    if !shelves.is_empty() {
+        // Clear of the last row: a shelf's title brings less air above it than a page section.
+        ui.add_space(16.0);
+    }
+    for s in &shelves {
+        crate::ui::shelf_carousel(
+            app,
+            ui,
+            "playlist",
+            s,
+            None,
+            crate::ui::MoreButton::Pill("More"),
+        );
+    }
 }
 
 /// YouTube's suggested songs under one of your playlists, each with a + to add it — the shelf
