@@ -177,7 +177,7 @@ impl Api {
             return Ok(false);
         };
         let http = self.http().await;
-        let token = match BrowserToken::from_str(&cookie, &http).await {
+        let token = match BrowserToken::from_str(&auth::for_token(&cookie), &http).await {
             Ok(token) => token,
             // Building the token is a request of its own, so with no connection it fails too —
             // and that is no reason to tell someone offline that their sign-in is gone.
@@ -185,8 +185,11 @@ impl Api {
                 return Err(anyhow::Error::new(e).context("could not reach YouTube Music"));
             }
             Err(e) => {
-                return Err(anyhow::Error::new(e)
-                    .context("the saved cookie is invalid or expired; sign in again"));
+                let why = match refused_page(&e, &cookie).await {
+                    Some(seen) if seen != Refusal::Other => seen.advice(),
+                    _ => "the saved cookie is invalid or expired; sign in again",
+                };
+                return Err(anyhow::Error::new(e).context(why));
             }
         };
         let yt = ytmapi_rs::builder::YtMusicBuilder::new_with_client(http)
@@ -283,10 +286,25 @@ impl Api {
         auth::validate_cookie(&cookie)?;
 
         let http = self.http().await;
-        let token = BrowserToken::from_str(&cookie, &http).await.context(
-            "YouTube rejected the cookie; paste only the cookie value, on a single \
-                 line. It may also have expired since you copied it.",
-        )?;
+        let token = match BrowserToken::from_str(&auth::for_token(&cookie), &http).await {
+            Ok(token) => token,
+            Err(e) => {
+                let seen = refused_page(&e, &cookie).await;
+                let why = match seen {
+                    Some(seen) if seen != Refusal::Other => seen.advice(),
+                    // Captured, not pasted: advice about pasting would send someone the wrong way.
+                    _ if source.is_some() => {
+                        "YouTube Music did not accept this session; it may be signed out or \
+                         need a check in the browser. Sign in again."
+                    }
+                    _ => {
+                        "YouTube rejected the cookie; paste only the cookie value, on a single \
+                         line. It may also have expired since you copied it."
+                    }
+                };
+                return Err(anyhow::Error::new(e).context(why));
+            }
+        };
         let yt = ytmapi_rs::builder::YtMusicBuilder::new_with_client(http)
             .with_auth_token(token)
             .build()
@@ -2441,6 +2459,110 @@ fn dump(var: &str, json: &serde_json::Value) {
 /// Whether an error reads as "no connection" rather than as YouTube refusing something: the
 /// request never got an answer. Read from the text because the errors arrive as strings in the
 /// app's events, and each layer — reqwest, `ytmapi-rs`, yt-dlp — words it its own way.
+/// What music.youtube.com sent instead of its own page, when `BrowserToken::from_str` refused a
+/// session with its bare "Error parsing header" — which it says alike for a cookie it could not
+/// read and for a page with no client version in it, so a report of it said nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refusal {
+    /// Google's own pages: sign in again, or confirm it is you.
+    Google,
+    /// YouTube's "unusual traffic" check.
+    Robot,
+    /// The cookie-consent page.
+    Consent,
+    /// The music page itself, or something unrecognised.
+    Other,
+}
+
+impl Refusal {
+    fn from_page(url: &str, page: &str) -> Self {
+        let host = url
+            .split("://")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or("");
+        if host.ends_with("accounts.google.com") {
+            Refusal::Google
+        } else if host.starts_with("consent.") {
+            Refusal::Consent
+        } else if url.contains("/sorry/") || page.contains("unusual traffic") {
+            Refusal::Robot
+        } else {
+            Refusal::Other
+        }
+    }
+
+    fn advice(self) -> &'static str {
+        match self {
+            Refusal::Google => {
+                "Google wants this account signed in again or confirmed. Open \
+                 music.youtube.com in your browser, finish what it asks, then sign in again here."
+            }
+            Refusal::Robot => {
+                "YouTube is asking to confirm you are not a robot. Open music.youtube.com in \
+                 your browser, pass the check, then try again."
+            }
+            Refusal::Consent => {
+                "YouTube is asking about cookies first. Open music.youtube.com in your browser, \
+                 answer it, then sign in again here."
+            }
+            Refusal::Other => "YouTube Music did not accept this session. Sign in again.",
+        }
+    }
+}
+
+/// Look at what music.youtube.com answers this cookie with, after `from_str` refused it, and log
+/// it: where the request ended up (scheme, host and path, never the query), the status, the
+/// page's title and whether it carried the client version `from_str` looks for. No cookie value
+/// is logged. `None` for any other error, and when the page could not be fetched either.
+async fn refused_page(error: &ytmapi_rs::Error, cookie: &str) -> Option<Refusal> {
+    if !error.to_string().contains("parsing header") {
+        return None;
+    }
+    // The user agent `ytmapi-rs` signs in with, so the page is the one it was shown.
+    const AGENT: &str =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:88.0) Gecko/20100101 Firefox/88.0";
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .gzip(true)
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .ok()?;
+    let response = client
+        .get("https://music.youtube.com")
+        .header(reqwest::header::USER_AGENT, AGENT)
+        .header(reqwest::header::COOKIE, auth::for_token(cookie))
+        .send()
+        .await
+        .inspect_err(|e| tracing::warn!(error = %e, "could not look at the refused page"))
+        .ok()?;
+    let status = response.status().as_u16();
+    let url = response.url();
+    let landed = format!(
+        "{}://{}{}",
+        url.scheme(),
+        url.host_str().unwrap_or(""),
+        url.path()
+    );
+    let page = response.text().await.unwrap_or_default();
+    let title = page
+        .split_once("<title>")
+        .and_then(|(_, rest)| rest.split_once("</title>"))
+        .map(|(t, _)| t.trim().chars().take(80).collect::<String>())
+        .unwrap_or_default();
+    let refusal = Refusal::from_page(&landed, &page);
+    tracing::warn!(
+        status,
+        %landed,
+        title,
+        client_version = page.contains("INNERTUBE_CLIENT_VERSION"),
+        sapisid = cookie.contains("SAPISID="),
+        ?refusal,
+        "YouTube Music refused the session"
+    );
+    Some(refusal)
+}
+
 pub fn looks_offline(error: &str) -> bool {
     const SIGNS: &[&str] = &[
         "error sending request",
@@ -2967,6 +3089,38 @@ fn map_playlist_song(s: PlaylistSong) -> Track {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refused sign-in names what YouTube showed instead of its music page.
+    #[test]
+    fn a_refused_session_is_told_by_the_page_it_landed_on() {
+        let refusal = |url, page| Refusal::from_page(url, page);
+        assert_eq!(
+            refusal("https://accounts.google.com/ServiceLogin", ""),
+            Refusal::Google
+        );
+        assert_eq!(
+            refusal("https://consent.youtube.com/m", ""),
+            Refusal::Consent
+        );
+        assert_eq!(
+            refusal("https://www.google.com/sorry/index", ""),
+            Refusal::Robot
+        );
+        assert_eq!(
+            refusal(
+                "https://music.youtube.com/",
+                "Our systems have detected unusual traffic"
+            ),
+            Refusal::Robot
+        );
+        assert_eq!(
+            refusal(
+                "https://music.youtube.com/",
+                "ytcfg INNERTUBE_CLIENT_VERSION"
+            ),
+            Refusal::Other
+        );
+    }
 
     /// An empty shell — what a private playlist looks like without a recognised session —
     /// is detectable, so it gets a plain error instead of the typed parser's key error.
