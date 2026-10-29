@@ -161,6 +161,10 @@ pub const SECTION_PT: f32 = 20.0;
 /// inside the row's hover and selection fill, which spans the whole row. At zero the number (or
 /// the cover, on rows without one) touched the fill's edge. The card's own side inset.
 pub const ROW_LEFT_INSET: f32 = 8.0;
+/// [`ROW_LEFT_INSET`] for the queue's rows: the cover nearer the fill's edge.
+pub const ROW_LEFT_INSET_TIGHT: f32 = 4.0;
+/// The gap between a queue row's cover and the top and bottom of its hover fill.
+pub const ROW_FILL_GAP_TIGHT: f32 = 6.0;
 /// The width of a numbered list's rank column before the art. Zero on unnumbered rows.
 pub const ROW_NUMBER_W: f32 = 26.0;
 /// The gap between a number and the cover beside it — the padding that keeps the two from

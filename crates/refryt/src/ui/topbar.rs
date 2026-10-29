@@ -406,19 +406,12 @@ pub(crate) fn search_box(
                                             widgets::mix(p.surface_hover, p.surface_active, tx),
                                         );
                                     }
-                                    // Drawn rather than the icon's 12 px raster, which came out spiky:
-                                    // two short strokes with rounded ends read softer at this size.
-                                    let stroke = egui::Stroke::new(
-                                        1.5,
+                                    widgets::paint_x(
+                                        mui.painter(),
+                                        rect.center(),
+                                        3.5,
                                         widgets::mix(p.secondary, p.text, tx),
                                     );
-                                    let c = rect.center();
-                                    for d in [vec2(3.5, 3.5), vec2(3.5, -3.5)] {
-                                        mui.painter().line_segment([c - d, c + d], stroke);
-                                        for end in [c - d, c + d] {
-                                            mui.painter().circle_filled(end, 0.75, stroke.color);
-                                        }
-                                    }
                                     if on_x {
                                         mui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                     }

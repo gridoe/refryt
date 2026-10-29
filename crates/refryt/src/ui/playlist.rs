@@ -155,6 +155,7 @@ fn suggestions(app: &mut App, ui: &mut egui::Ui) {
                     badge: None,
                     shape: widgets::ArtShape::Square,
                     hide_art: false,
+                    tight: false,
                     thumbnail: t.thumbnail.as_ref(),
                     menu: Some(widgets::RowMenu {
                         track: t,
@@ -384,7 +385,17 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
         )
     };
 
-    if out.play {
+    let radio_mix = app
+        .playlist
+        .as_ref()
+        .map(|pl| pl.id.clone())
+        .filter(|id| crate::model::is_radio_mix_id(id));
+    if out.play
+        && let Some(id) = radio_mix
+    {
+        // A mix plays as its radio, the way its card does (see `App::play_playlist`).
+        app.play_playlist(id);
+    } else if out.play {
         let tracks = app
             .playlist
             .as_ref()

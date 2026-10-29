@@ -281,6 +281,8 @@ pub(crate) struct RowSpec<'a> {
     /// See `widgets::TrackRow::hide_art` — the album page, whose rows would all repeat the
     /// header's own cover.
     pub hide_art: bool,
+    /// See `widgets::TrackRow::tight` — the queue.
+    pub tight: bool,
     pub thumbnail: Option<&'a std::sync::Arc<str>>,
     /// Right-click menu. `None` for rows that are not songs.
     pub menu: Option<widgets::RowMenu<'a>>,
@@ -528,7 +530,10 @@ pub(crate) fn spec_rows<'d>(
     let mut clicked = None;
     let mut action = None;
     let mut reorder = None;
-    let drawn = virtual_rows(ui, theme::ROW_HEIGHT, count, |ui, i| {
+    // Rows in one list share a height; the queue's are shorter (see `widgets::row_height`).
+    let tight = count > 0 && spec(0).tight;
+    let row_h = crate::widgets::row_height(tight, ui.available_width());
+    let drawn = virtual_rows(ui, row_h, count, |ui, i| {
         let s = spec(i);
         let like = row_like(&s, liked);
         // Only an editable playlist's own track list ever sets this — see `RowMenu::playlist_id`
@@ -568,6 +573,7 @@ pub(crate) fn spec_rows<'d>(
                 art,
                 shape: s.shape,
                 hide_art: s.hide_art,
+                tight: s.tight,
                 id_salt: i,
                 menu: s.menu,
                 like,
@@ -674,6 +680,7 @@ fn paint_grid_cell<'d>(
             art,
             shape: s.shape,
             hide_art: false,
+            tight: false,
             id_salt: i,
             menu: s.menu,
             like,
@@ -930,6 +937,7 @@ pub(crate) fn track_rows_quiet(
                 // track list is the album/playlist cover and a 16:9 slot only crops it.
                 shape: widgets::ArtShape::Square,
                 hide_art,
+                tight: false,
                 thumbnail: t.thumbnail.as_ref(),
                 menu: Some(widgets::RowMenu {
                     track: t,
@@ -1037,6 +1045,7 @@ pub(crate) fn shelf_track_spec<'a>(
         // album/playlist art and a 16:9 slot only crops it.
         shape: widgets::ArtShape::Square,
         hide_art: false,
+        tight: false,
         thumbnail: t.thumbnail.as_ref(),
         menu: Some(widgets::RowMenu {
             track: t,
@@ -2773,6 +2782,7 @@ pub(crate) fn entry_row_spec<'a>(
             _ => widgets::ArtShape::Square,
         },
         hide_art: false,
+        tight: false,
         thumbnail: item.thumbnail(),
         menu: match item {
             Entry::Song(t) | Entry::Video(t) => Some(widgets::RowMenu {

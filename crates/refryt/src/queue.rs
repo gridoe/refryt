@@ -200,6 +200,7 @@ impl PlayQueue {
         self.tracks.get(index)
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.tracks.len()
     }
@@ -248,6 +249,20 @@ impl PlayQueue {
     pub(crate) fn tail_start(&self, chosen: Chosen) -> Option<usize> {
         chosen?;
         self.tracks.iter().position(|t| !is_chosen(chosen, t))
+    }
+
+    /// Where the listener's own songs still to come end: the first radio track after the playing
+    /// one, or the end of the list. "Add to queue" lands here. Unlike [`Self::tail_start`], radio
+    /// songs already played do not count, or the addition would land behind the playing song.
+    pub(crate) fn own_end(&self, chosen: Chosen) -> usize {
+        let start = self.current.map_or(0, |i| i + 1).min(self.tracks.len());
+        let Some(c) = chosen else {
+            return self.tracks.len();
+        };
+        self.tracks[start..]
+            .iter()
+            .position(|t| !c.contains(&t.video_id))
+            .map_or(self.tracks.len(), |p| start + p)
     }
 
     /// What plays after the playing track, in order: the rest of the list, or of the shuffle
@@ -630,6 +645,95 @@ impl PlayQueue {
         added
     }
 
+    /// How many of the listener's own songs play before the radio's first, in play order: all
+    /// of [`Self::upcoming`] while no radio song is in it.
+    pub(crate) fn chosen_before_radio(&self, repeat: RepeatMode, chosen: Chosen) -> usize {
+        let own = |&i: &usize| is_chosen(chosen, &self.tracks[i]);
+        if self.shuffle.is_some() {
+            return self
+                .upcoming(repeat, chosen)
+                .into_iter()
+                .take_while(own)
+                .count();
+        }
+        let start = self.current.map_or(0, |i| i + 1).min(self.tracks.len());
+        (start..self.tracks.len()).take_while(own).count()
+    }
+
+    /// Drop the radio's songs still to come — what [`Self::upcoming`] lists that the listener did
+    /// not choose — so a radio filter can put its own in their place. The playing track, the
+    /// ones already played and every chosen one stay. Returns how many went.
+    pub(crate) fn drop_upcoming_radio(&mut self, repeat: RepeatMode, chosen: Chosen) -> usize {
+        let mut gone = vec![false; self.tracks.len()];
+        for i in self.upcoming(repeat, chosen) {
+            if self.current != Some(i) && !is_chosen(chosen, &self.tracks[i]) {
+                gone[i] = true;
+            }
+        }
+        self.drop_marked(&gone)
+    }
+
+    /// Clear Up next's own part: the listener's songs still to come before the radio's first,
+    /// as [`Self::chosen_before_radio`] counts them. The playing track, the ones already played
+    /// and the radio stay. Returns how many went.
+    pub(crate) fn clear_up_next(&mut self, repeat: RepeatMode, chosen: Chosen) -> usize {
+        let mut gone = vec![false; self.tracks.len()];
+        for i in self
+            .upcoming(repeat, chosen)
+            .into_iter()
+            .take_while(|&i| is_chosen(chosen, &self.tracks[i]))
+        {
+            if self.current != Some(i) {
+                gone[i] = true;
+            }
+        }
+        self.drop_marked(&gone)
+    }
+
+    /// Take out every track `gone` marks, keeping the rest's order, the playing track and the
+    /// shuffle order on them.
+    fn drop_marked(&mut self, gone: &[bool]) -> usize {
+        let dropped = gone.iter().filter(|&&g| g).count();
+        if dropped == 0 {
+            return 0;
+        }
+        let mut kept = 0;
+        let map: Vec<Option<usize>> = gone
+            .iter()
+            .map(|&g| {
+                (!g).then(|| {
+                    kept += 1;
+                    kept - 1
+                })
+            })
+            .collect();
+        let mut i = 0;
+        self.tracks.retain(|_| {
+            i += 1;
+            !gone[i - 1]
+        });
+        self.history.forget_within_queue();
+        self.reindex(|i| map.get(i).copied().flatten());
+        dropped
+    }
+
+    /// Remove `video_id` from the radio's songs still to come, if it is one. Returns whether it
+    /// was. A song the listener chose, or the playing one, stays.
+    pub(crate) fn take_upcoming_radio(
+        &mut self,
+        video_id: &str,
+        repeat: RepeatMode,
+        chosen: Chosen,
+    ) -> bool {
+        if chosen.is_none() || chosen.is_some_and(|c| c.contains(video_id)) {
+            return false;
+        }
+        self.upcoming(repeat, chosen)
+            .into_iter()
+            .find(|&i| self.tracks[i].video_id == video_id)
+            .is_some_and(|i| self.remove(i))
+    }
+
     /// Remove the track at `index`. The playing track is never removed; returns whether one was.
     pub(crate) fn remove(&mut self, index: usize) -> bool {
         if self.current == Some(index) || index >= self.tracks.len() {
@@ -729,6 +833,8 @@ mod tests {
             state: River::Dead,
             seed: String::new(),
             chosen: set(chosen),
+            filters: Vec::new(),
+            filtering: None,
         }
     }
 
@@ -750,6 +856,99 @@ mod tests {
             played.push(q.tracks[next].video_id.clone());
         }
         played
+    }
+
+    /// A radio filter swaps only the radio's songs still to come: the played radio song, the
+    /// playing one and the listener's own picks stay where they are.
+    #[test]
+    fn dropping_the_upcoming_radio_keeps_played_playing_and_chosen_songs() {
+        let chosen = set(&["a", "b", "mine"]);
+        // a b are the listener's; r1 played; r2 plays; mine was queued by hand among the radio.
+        let mut q = queue(&["a", "b", "r1", "r2", "r3", "mine", "r4"], 3);
+        assert_eq!(q.drop_upcoming_radio(RepeatMode::Off, Some(&chosen)), 2);
+        assert_eq!(ids(&q, &[0, 1, 2, 3, 4]), ["a", "b", "r1", "r2", "mine"]);
+        assert_eq!(q.len(), 5);
+        assert_eq!(q.current(), Some(3));
+        let up = q.upcoming(RepeatMode::Off, Some(&chosen));
+        assert_eq!(ids(&q, &up), ["mine"]);
+    }
+
+    /// Up next's filter waits for the radio to come near: counted in play order, from the song
+    /// after the playing one, up to the radio's first.
+    #[test]
+    fn the_own_songs_before_the_radio_are_counted_in_play_order() {
+        let chosen = set(&["a", "b", "c"]);
+        let q = queue(&["a", "b", "c", "r1", "r2"], 0);
+        assert_eq!(q.chosen_before_radio(RepeatMode::Off, Some(&chosen)), 2);
+        let q = queue(&["a", "b", "c", "r1", "r2"], 2);
+        assert_eq!(q.chosen_before_radio(RepeatMode::Off, Some(&chosen)), 0);
+        // A mix: only its seed is chosen, so the radio is next from the start.
+        let q = queue(&["r0", "r1", "r2"], 0);
+        assert_eq!(
+            q.chosen_before_radio(RepeatMode::Off, Some(&set(&["mix"]))),
+            0
+        );
+        // No radio yet: every song still to come is the listener's.
+        let q = queue(&["a", "b", "c"], 0);
+        assert_eq!(q.chosen_before_radio(RepeatMode::Off, Some(&chosen)), 2);
+        let mut q = queue(&["a", "b", "c", "r1"], 0);
+        q.set_shuffle(true, Some(&chosen));
+        let own = q
+            .upcoming(RepeatMode::Off, Some(&chosen))
+            .iter()
+            .take_while(|&&i| q.tracks[i].video_id != "r1")
+            .count();
+        assert_eq!(q.chosen_before_radio(RepeatMode::Off, Some(&chosen)), own);
+    }
+
+    /// Up next's ✕ clears the listener's songs still to come, and only those: the radio after
+    /// them, the playing song and the played ones stay.
+    #[test]
+    fn clearing_up_next_keeps_the_radio_and_the_playing_song() {
+        let chosen = set(&["a", "b", "c", "d"]);
+        let mut q = queue(&["a", "b", "c", "d", "r1", "r2"], 1);
+        assert_eq!(q.clear_up_next(RepeatMode::Off, Some(&chosen)), 2);
+        assert_eq!(ids(&q, &[0, 1, 2, 3]), ["a", "b", "r1", "r2"]);
+        assert_eq!(q.current(), Some(1));
+        // No radio: the whole of Up next goes.
+        let mut q = queue(&["a", "b", "c"], 0);
+        assert_eq!(q.clear_up_next(RepeatMode::Off, None), 2);
+        assert_eq!(q.len(), 1);
+        let mut q = queue(&["a", "b", "c", "d", "r1"], 0);
+        q.set_shuffle(true, Some(&chosen));
+        let playing = q.current_track().unwrap().video_id.clone();
+        q.clear_up_next(RepeatMode::Off, Some(&chosen));
+        assert_eq!(q.current_track().unwrap().video_id, playing);
+        let up = q.upcoming(RepeatMode::Off, Some(&chosen));
+        assert_eq!(ids(&q, &up), ["r1"]);
+    }
+
+    #[test]
+    fn dropping_the_upcoming_radio_under_shuffle_keeps_the_order_on_its_songs() {
+        let chosen = set(&["a", "b", "c"]);
+        let mut q = queue(&["a", "b", "c", "r1", "r2", "r3"], 0);
+        q.set_shuffle(true, Some(&chosen));
+        let before: Vec<String> = {
+            let up = q.upcoming(RepeatMode::Off, Some(&chosen));
+            ids(&q, &up)
+        };
+        let playing = q.current_track().unwrap().video_id.clone();
+        q.drop_upcoming_radio(RepeatMode::Off, Some(&chosen));
+        assert_eq!(q.current_track().unwrap().video_id, playing);
+        let after = {
+            let up = q.upcoming(RepeatMode::Off, Some(&chosen));
+            ids(&q, &up)
+        };
+        let expected: Vec<String> = before
+            .into_iter()
+            .filter(|id| !id.starts_with('r'))
+            .collect();
+        assert_eq!(after, expected);
+        assert!(
+            q.tracks()
+                .iter()
+                .all(|t| !t.video_id.starts_with('r') || t.video_id == playing)
+        );
     }
 
     /// The listener jumps to a song further down: it plays next, and the songs they jumped over
@@ -942,18 +1141,81 @@ mod tests {
         }
     }
 
-    /// The M69 case: Add to Queue while a radio song plays lands above it, and Next then goes on
-    /// to the following radio song, not back to the one playing.
+    /// Add to Queue while a radio song plays lands straight after it, not among the radio songs
+    /// already played: Next plays the addition, then goes on with the radio.
     #[test]
-    fn add_to_queue_inside_the_radio_tail_keeps_next_moving() {
+    fn add_to_queue_inside_the_radio_tail_plays_next() {
         let mut q = queue(&["a", "r1", "r2", "r3"], 2);
         let mut chosen = set(&["a"]);
         chosen.insert("x".into());
-        let at = q.tail_start(Some(&chosen)).unwrap();
+        let at = q.own_end(Some(&chosen));
         q.insert(at, track("x"), Slot::BeforeRadio, Some(&chosen));
         assert_eq!(q.current_track().unwrap().video_id, "r2");
         let next = q.next(RepeatMode::Off, Some(&chosen)).unwrap();
+        assert_eq!(q.tracks[next].video_id, "x");
+        q.set_current(next);
+        let next = q.next(RepeatMode::Off, Some(&chosen)).unwrap();
         assert_eq!(q.tracks[next].video_id, "r3");
+    }
+
+    /// The listener's own songs after the playing one stay ahead of an addition; the radio
+    /// comes after it.
+    #[test]
+    fn add_to_queue_goes_after_the_listeners_songs_and_before_the_radio() {
+        let q = queue(&["r0", "a", "b", "r1"], 0);
+        let chosen = set(&["a", "b", "x"]);
+        assert_eq!(q.own_end(Some(&chosen)), 3);
+        assert_eq!(q.own_end(None), 4, "no radio: the end");
+        let q = queue(&["a", "b"], 1);
+        assert_eq!(q.own_end(Some(&chosen)), 2);
+    }
+
+    /// Queuing a song the radio already holds moves it out of the radio rather than copying it.
+    #[test]
+    fn queuing_a_radio_song_moves_it() {
+        let mut q = queue(&["a", "r1", "r2", "r3"], 1);
+        let mut chosen = set(&["a"]);
+        assert!(
+            !q.take_upcoming_radio("r1", RepeatMode::Off, Some(&chosen)),
+            "it is playing"
+        );
+        assert!(
+            !q.take_upcoming_radio("a", RepeatMode::Off, Some(&chosen)),
+            "it was chosen"
+        );
+        assert!(
+            !q.take_upcoming_radio("r3", RepeatMode::Off, None),
+            "no radio"
+        );
+        assert!(q.take_upcoming_radio("r3", RepeatMode::Off, Some(&chosen)));
+        chosen.insert("r3".into());
+        let at = q.own_end(Some(&chosen));
+        q.insert(at, track("r3"), Slot::BeforeRadio, Some(&chosen));
+        assert_eq!(
+            ids(&q, &(0..q.tracks.len()).collect::<Vec<_>>()),
+            ["a", "r1", "r3", "r2"]
+        );
+        assert_eq!(q.current_track().unwrap().video_id, "r1");
+    }
+
+    /// Shuffle turned on part way through: the songs already played, an added one among them,
+    /// do not come round again, and Previous still reaches them.
+    #[test]
+    fn shuffle_on_leaves_the_played_songs_behind() {
+        let mut q = queue(&["a", "x", "r1", "r2", "r3", "r4"], 2);
+        let chosen = set(&["a", "x"]);
+        q.set_shuffle(true, Some(&chosen));
+        let mut up = ids(&q, &q.upcoming(RepeatMode::Off, Some(&chosen)));
+        up.sort();
+        assert_eq!(up, ["r2", "r3", "r4"]);
+        assert_eq!(q.current_track().unwrap().video_id, "r1");
+        assert_eq!(
+            q.previous_in_order()
+                .map(|i| q.tracks[i].video_id.clone())
+                .as_deref(),
+            Some("x")
+        );
+        assert_eq!(q.chosen_before_radio(RepeatMode::Off, Some(&chosen)), 0);
     }
 
     #[test]
@@ -1107,7 +1369,7 @@ mod tests {
         chosen.insert("n".into());
         assert_eq!(ids(&q, &q.upcoming(RepeatMode::Off, Some(&chosen)))[0], "n");
         chosen.insert("q".into());
-        let at = q.tail_start(Some(&chosen)).unwrap();
+        let at = q.own_end(Some(&chosen));
         q.insert(at, track("q"), Slot::BeforeRadio, Some(&chosen));
         let up = ids(&q, &q.upcoming(RepeatMode::Off, Some(&chosen)));
         assert_eq!(up[3], "q", "after n, b, c: {up:?}");

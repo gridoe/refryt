@@ -830,6 +830,12 @@ pub(crate) struct Radio {
     /// Ids, not indices — inserting into the queue shifts indices, and ids do not. A set, because
     /// only membership is ever asked, once per queued track on every frame the queue is open.
     pub(crate) chosen: std::collections::HashSet<String>,
+    /// The radio's filters, from the page that opened it: "All", "Familiar", "Discover", a
+    /// decade, a genre. Empty until that page lands, and for a radio that came without them.
+    pub(crate) filters: Vec<crate::innertube::QueueFilter>,
+    /// A filter asked for and not landed yet: its playlist id, which its reply is matched on,
+    /// and the river's state before, put back if the request fails.
+    pub(crate) filtering: Option<(String, River)>,
 }
 
 impl Radio {
@@ -839,7 +845,68 @@ impl Radio {
             state: River::Pending,
             seed: nearest_song_id(tracks, tracks.len().checked_sub(1)?)?,
             chosen: tracks.iter().map(|t| t.video_id.clone()).collect(),
+            filters: Vec::new(),
+            filtering: None,
         })
+    }
+
+    /// For `playback.json`. A filter in flight is saved as the river it replaced. Only the
+    /// chosen songs still in `queue` are written: the set otherwise keeps every id ever queued.
+    fn to_persisted(&self, queue: &[Track]) -> crate::playback::PersistedRadio {
+        let state = self
+            .filtering
+            .as_ref()
+            .map_or(&self.state, |(_, before)| before);
+        crate::playback::PersistedRadio {
+            seed: self.seed.clone(),
+            chosen: queue
+                .iter()
+                .filter(|t| self.chosen.contains(&t.video_id))
+                .map(|t| t.video_id.clone())
+                .collect(),
+            pending: *state == River::Pending,
+            token: match state {
+                River::Open(t) => Some(t.clone()),
+                _ => None,
+            },
+            filters: self
+                .filters
+                .iter()
+                .map(|f| crate::playback::PersistedFilter {
+                    label: f.label.clone(),
+                    playlist_id: f.target.playlist_id.clone(),
+                    params: f.target.params.clone(),
+                    selected: f.selected,
+                })
+                .collect(),
+        }
+    }
+
+    fn from_persisted(r: crate::playback::PersistedRadio) -> Self {
+        Self {
+            // A river that had run dry starts afresh from the queue's end, as a restored queue
+            // always did: a new session is worth asking again.
+            state: match (r.pending, r.token) {
+                (false, Some(t)) => River::Open(t),
+                _ => River::Pending,
+            },
+            seed: r.seed,
+            chosen: r.chosen.into_iter().collect(),
+            filters: r
+                .filters
+                .into_iter()
+                .map(|f| crate::innertube::QueueFilter {
+                    label: f.label,
+                    target: crate::model::WatchTarget {
+                        video_id: None,
+                        playlist_id: f.playlist_id,
+                        params: f.params,
+                    },
+                    selected: f.selected,
+                })
+                .collect(),
+            filtering: None,
+        }
     }
 }
 
@@ -2928,10 +2995,14 @@ impl App {
             return;
         }
         let tracks: Vec<Track> = store.queue.into_iter().map(|t| t.into_track()).collect();
-        // The radio is not saved; the restored queue is taken as chosen, and gets a river like
-        // any hand-picked one, or Autoplay stops at its end. It is asked for once the queue first
-        // plays (see the autoplay step), not here.
-        self.radio = Radio::pending(&tracks);
+        // The radio as it was: its songs still marked as its own, its filters, and the page to
+        // continue from. A file from before it was saved takes the whole queue as chosen and
+        // gets a river like any hand-picked one, asked for once the queue first plays (see the
+        // autoplay step), not here.
+        self.radio = match store.radio {
+            Some(r) => Some(Radio::from_persisted(r)),
+            None => Radio::pending(&tracks),
+        };
         // Anything past a couple of seconds is worth resuming; the very start is not. The
         // shuffle order is not saved: a shuffled session draws a fresh one.
         self.q.restore_session(
@@ -2967,6 +3038,7 @@ impl App {
             volume: self.last_volume,
             muted: self.muted,
             video_open: self.video_open,
+            radio: self.radio.as_ref().map(|r| r.to_persisted(self.q.tracks())),
         })
     }
 
@@ -3547,15 +3619,67 @@ impl App {
     /// An album card's own play button: start playing it without navigating to its page —
     /// see `Event::CardTracksReady`'s own doc comment for why this is a separate fetch from
     /// `load_album`'s.
+    ///
+    /// The album already loaded (playing or paused) is paused or resumed on the spot, as its
+    /// button shows, rather than fetched again and decided once the reply lands.
     pub(crate) fn play_album(&mut self, id: String) {
+        if crate::ui::album_active(&self.now, &id) {
+            self.toggle_playback();
+            return;
+        }
         self.pending_card_play = Some(id.clone());
         self.backend.play_album(id);
     }
 
-    /// [`Self::play_album`], for a playlist card.
+    /// [`Self::play_album`], for a playlist card. The check matters most for a mix: fetched
+    /// again it comes back as a new list without the song playing, and started over from another.
     pub(crate) fn play_playlist(&mut self, id: String) {
+        if crate::ui::playlist_active(&self.now, &id) {
+            self.toggle_playback();
+            return;
+        }
         self.pending_card_play = Some(id.clone());
-        self.backend.play_playlist(id);
+        if crate::model::is_radio_mix_id(&id) {
+            // One of YouTube's mixes plays as the site plays it: as its radio, which goes on
+            // past the mix's first page and brings Up next's filters, rather than as a fixed
+            // list whose radio (and filters) only arrive once it nearly runs out.
+            let target = crate::model::WatchTarget {
+                video_id: None,
+                playlist_id: crate::model::bare_playlist_id(&id).to_owned(),
+                params: None,
+            };
+            self.backend.play_target(id, target);
+        } else {
+            self.backend.play_playlist(id);
+        }
+    }
+
+    /// Pick one of the radio's filters (Up next's "All ▾"): the radio's songs still to come are
+    /// swapped for that filter's once its page lands. The playing song and the listener's own
+    /// stay. While it is in flight the river is held, so a page of the old radio arriving
+    /// meanwhile is dropped rather than appended.
+    pub(crate) fn filter_radio(&mut self, index: usize) {
+        let playing = self
+            .now
+            .track
+            .as_ref()
+            .filter(|t| t.local_path.is_none())
+            .map(|t| t.video_id.clone());
+        let Some(radio) = &mut self.radio else {
+            return;
+        };
+        let Some(filter) = radio.filters.get(index) else {
+            return;
+        };
+        if filter.selected || radio.filtering.is_some() {
+            return;
+        }
+        let mut target = filter.target.clone();
+        // The site sends the song playing with it, so the filtered radio continues from there.
+        target.video_id = playing;
+        let before = std::mem::replace(&mut radio.state, River::Dead);
+        radio.filtering = Some((target.playlist_id.clone(), before));
+        self.backend.filter_radio(target);
     }
 
     fn load_playlist(&mut self, id: String) {
@@ -5572,7 +5696,19 @@ impl App {
                     }
                 }
                 Event::Playing(..) => {}
+                // A mix card's own play (`play_playlist`), seeded with the mix's id: only the
+                // card clicked last may start, as for `CardTracksReady`.
+                Event::MixLoaded { seed, .. }
+                    if crate::model::is_radio_mix_id(&seed)
+                        && self.pending_card_play.as_deref() != Some(&seed) => {}
                 Event::MixLoaded { seed, mut queue } => {
+                    if self.pending_card_play.as_deref() == Some(&seed) {
+                        self.pending_card_play = None;
+                        self.now.playlist_playing = Some((
+                            seed.clone(),
+                            queue.tracks.iter().map(|t| t.video_id.clone()).collect(),
+                        ));
+                    }
                     // The player overlay is the now-playing song's own rating and the only like
                     // state a mix carries; write it onto the first row so the bar's thumbs show
                     // it. (Rows have no button of their own.)
@@ -5594,6 +5730,8 @@ impl App {
                         state: queue.next.map_or(River::Dead, River::Open),
                         chosen: std::iter::once(seed.clone()).collect(),
                         seed: seed.clone(),
+                        filters: queue.filters,
+                        filtering: None,
                     });
                     if let Some(seed_index) = seed_index {
                         tracing::info!(%seed, "start mix: keeping the playing track");
@@ -5631,8 +5769,49 @@ impl App {
                         tracing::debug!(added, "seeded the autoplay tail");
                         if let Some(radio) = &mut self.radio {
                             radio.state = landed(added, queue.next);
+                            radio.filters = queue.filters;
                         }
                         self.q.trim_played_prefix();
+                    }
+                }
+                Event::RadioFiltered { playlist_id, queue } => {
+                    let fresh = self.radio.as_ref().is_some_and(|r| {
+                        r.filtering
+                            .as_ref()
+                            .is_some_and(|(id, _)| *id == playlist_id)
+                    });
+                    if fresh {
+                        let chosen = self.radio.as_ref().map(|r| &r.chosen);
+                        let dropped = self.q.drop_upcoming_radio(self.repeat, chosen);
+                        let added = self.q.append_radio(&queue.tracks, chosen);
+                        tracing::debug!(dropped, added, "filtered the radio");
+                        if let Some(radio) = &mut self.radio {
+                            radio.filtering = None;
+                            radio.state = landed(added, queue.next);
+                            // The reply marks its own chip selected; a reply without any keeps
+                            // the old list, with the pick marked by hand.
+                            if queue.filters.is_empty() {
+                                for f in &mut radio.filters {
+                                    f.selected = f.target.playlist_id == playlist_id;
+                                }
+                            } else {
+                                radio.filters = queue.filters;
+                            }
+                        }
+                        self.prefetch_next();
+                    }
+                }
+                Event::RadioFilterFailed { playlist_id, error } => {
+                    if let Some(radio) = &mut self.radio
+                        && let Some((id, before)) = radio.filtering.take()
+                    {
+                        if id == playlist_id {
+                            radio.state = before;
+                            tracing::warn!(%error, "radio filter failed");
+                            self.toast_error(&failure_text("Could not change the radio", &error));
+                        } else {
+                            radio.filtering = Some((id, before));
+                        }
                     }
                 }
                 Event::MixSeedFailed { seed, error } => {
@@ -6046,6 +6225,15 @@ impl App {
         self.play_index_restore(index);
     }
 
+    /// Up next's ✕: the listener's songs still to come go; the playing one and the radio after
+    /// them stay.
+    pub(crate) fn clear_up_next(&mut self) {
+        let chosen = self.radio.as_ref().map(|r| &r.chosen);
+        if self.q.clear_up_next(self.repeat, chosen) > 0 {
+            self.toast("Cleared your queue");
+        }
+    }
+
     /// A click on a song in Up next. With "Keep the songs you jump over" on, the song is brought
     /// up next first (`PlayQueue::bring_up_next`), so the songs between it and the playing one
     /// still play, after it; off, it is a plain jump to that place in the queue.
@@ -6386,6 +6574,7 @@ impl App {
 
     /// Put `track` straight after the playing one, in the list and in a shuffle's order.
     pub(crate) fn play_next(&mut self, track: Track) {
+        self.take_from_radio(&track.video_id);
         match self.q.current() {
             Some(i) => {
                 if let Some(radio) = &mut self.radio {
@@ -6405,15 +6594,26 @@ impl App {
     }
 
     /// Append `track` to the end of the queue, without disturbing what is playing. With a
-    /// river's tail already queued, "the end" is before it: the listener's additions come after
-    /// the songs they chose and before the algorithm's, in a shuffle's order as well.
+    /// river's tail already queued, "the end" is before its songs still to come: the listener's
+    /// additions come after the songs they chose and before the algorithm's, in a shuffle's
+    /// order as well.
     pub(crate) fn add_to_queue(&mut self, track: Track) {
+        self.take_from_radio(&track.video_id);
         if let Some(radio) = &mut self.radio {
             radio.chosen.insert(track.video_id.clone());
         }
         let chosen = self.radio.as_ref().map(|r| &r.chosen);
-        let at = self.q.tail_start(chosen).unwrap_or(self.q.len());
+        let at = self.q.own_end(chosen);
         self.q.insert(at, track, Slot::BeforeRadio, chosen);
+    }
+
+    /// Take `video_id` out of the radio's songs still to come, before the listener queues it
+    /// themselves: it moves from Autoplay to Next up rather than playing twice.
+    fn take_from_radio(&mut self, video_id: &str) {
+        if let Some(radio) = &self.radio {
+            self.q
+                .take_upcoming_radio(video_id, self.repeat, Some(&radio.chosen));
+        }
     }
 
     /// Whether there is a confirmed session. Every write — rating, the library, playlists —
@@ -9091,7 +9291,42 @@ mod tests {
             state,
             seed: seed.to_owned(),
             chosen: chosen.iter().map(|s| (*s).to_owned()).collect(),
+            filters: Vec::new(),
+            filtering: None,
         }
+    }
+
+    /// A restart keeps the radio: which songs were the listener's, the page to continue from,
+    /// and its filters with the one picked. A filter still in flight saves the river it replaced.
+    #[test]
+    fn the_radio_survives_a_restart() {
+        let mut r = radio(River::Open("tok".into()), "a", &["a", "gone"]);
+        r.filters = vec![crate::innertube::QueueFilter {
+            label: "Familiar".into(),
+            target: crate::model::WatchTarget {
+                video_id: None,
+                playlist_id: "RDATx".into(),
+                params: Some("p".into()),
+            },
+            selected: true,
+        }];
+        let queue = vec![track("a"), track("r1")];
+        let back = Radio::from_persisted(r.to_persisted(&queue));
+        assert_eq!(back.state, River::Open("tok".into()));
+        assert_eq!(back.seed, "a");
+        assert_eq!(back.chosen, ["a".to_owned()].into_iter().collect());
+        assert_eq!(back.filters, r.filters);
+
+        r.filtering = Some(("RDATy".into(), River::Open("old".into())));
+        r.state = River::Dead;
+        let back = Radio::from_persisted(r.to_persisted(&queue));
+        assert_eq!(back.state, River::Open("old".into()));
+        assert!(back.filtering.is_none());
+
+        // Run dry: a new session asks again from the queue's end.
+        r.filtering = None;
+        let back = Radio::from_persisted(r.to_persisted(&queue));
+        assert_eq!(back.state, River::Pending);
     }
 
     /// A hand-picked queue seeds its tail as soon as playback starts, from its last track —
