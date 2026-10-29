@@ -203,6 +203,27 @@ fn curl_cookie(line: &str) -> Option<String> {
     None
 }
 
+/// The cookie as `ytmapi-rs`'s `BrowserToken::from_str` must see it: SAPISID first, empty and
+/// broken pairs dropped. It reads SAPISID up to the next `;`, so with SAPISID the last cookie —
+/// how an import can order it, since a jar keeps the browser's own storage order — it fails with
+/// a bare "Error parsing header" though the session is good. What is stored is left as captured.
+pub fn for_token(cookie: &str) -> String {
+    let pairs: Vec<&str> = cookie
+        .split(';')
+        .map(str::trim)
+        .filter(|p| {
+            p.split_once('=')
+                .is_some_and(|(name, _)| !name.trim().is_empty())
+        })
+        .collect();
+    let sapisid = |p: &str| {
+        p.split_once('=')
+            .is_some_and(|(n, _)| n.trim() == "SAPISID")
+    };
+    let (first, rest): (Vec<&str>, Vec<&str>) = pairs.into_iter().partition(|p| sapisid(p));
+    first.into_iter().chain(rest).collect::<Vec<_>>().join("; ")
+}
+
 /// Strip bytes that are illegal in an HTTP header value. Pasted cookies routinely pick up
 /// stray line breaks (console wrapping, cURL blobs, trailing newlines); without this the
 /// request builder fails with a cryptic "builder error" and the cookie is never tried.
@@ -288,6 +309,22 @@ pub enum AuthState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A good session whose SAPISID came last failed to sign in at all; the token now always
+    /// finds a `;` after it, and nothing else in the cookie is lost or changed.
+    #[test]
+    fn the_token_sees_sapisid_first() {
+        let cookie = "HSID=h; SSID=s; __Secure-3PSID=p; SAPISID=a/b";
+        let out = for_token(cookie);
+        assert_eq!(out, "SAPISID=a/b; HSID=h; SSID=s; __Secure-3PSID=p");
+        assert_eq!(for_token(&out), out);
+        // `__Secure-3PAPISID` is another cookie, and stays where it was.
+        assert_eq!(
+            for_token("__Secure-3PAPISID=x; SID=y; SAPISID=z;"),
+            "SAPISID=z; __Secure-3PAPISID=x; SID=y"
+        );
+        assert_eq!(for_token(" ; junk; =v; A=1 "), "A=1");
+    }
 
     const FULL: &str = "SID=a; HSID=b; SSID=c; SAPISID=d; __Secure-3PSID=e; LOGIN_INFO=f";
 
