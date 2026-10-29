@@ -202,13 +202,13 @@ fn new_playlist_popup(app: &mut App, ui: &mut egui::Ui) {
                 for (grow, alpha) in [(14.0, 24), (7.0, 40), (2.0, 60)] {
                     painter.rect_filled(
                         card.expand(grow),
-                        egui::CornerRadius::same(theme::RADIUS + 2 + grow as u8),
+                        egui::CornerRadius::same(theme::radii().popup + grow as u8),
                         egui::Color32::from_black_alpha(alpha),
                     );
                 }
                 painter.rect_filled(
                     card,
-                    egui::CornerRadius::same(theme::RADIUS + 2),
+                    egui::CornerRadius::same(theme::radii().popup),
                     app.palette.overlay,
                 );
 
@@ -475,7 +475,7 @@ fn rail_row_compact(
                 palette.glass_state(palette.surface_hover, t)
             };
             ui.painter()
-                .rect_filled(rect, egui::CornerRadius::same(theme::RADIUS), fill);
+                .rect_filled(rect, egui::CornerRadius::same(theme::radii().control), fill);
         }
         let art_rect = Rect::from_center_size(
             rect.center(),
@@ -520,7 +520,7 @@ fn rail_row(
                 palette.glass_state(palette.surface_hover, t)
             };
             ui.painter()
-                .rect_filled(rect, egui::CornerRadius::same(theme::RADIUS), fill);
+                .rect_filled(rect, egui::CornerRadius::same(theme::radii().control), fill);
         }
 
         let art_rect = Rect::from_center_size(

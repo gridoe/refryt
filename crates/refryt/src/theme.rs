@@ -19,16 +19,132 @@ mod ramp;
 // Metrics
 // ---------------------------------------------------------------------------------------------
 
-/// Cards, buttons, cover art at rest sizes; the art's own radius grows from this with its
-/// size, up to [`ART_RADIUS_MAX`].
-pub const RADIUS: u8 = 8;
-/// The most a cover's corners ever round. A 200px card at a fixed 8 reads nearly square —
-/// the curve has to grow with the art, but a radius past this starts eating the image.
-pub const ART_RADIUS_MAX: u8 = 16;
-/// Inputs and chips.
-pub const RADIUS_SMALL: u8 = 4;
-/// The frameless window itself.
-pub const WINDOW_RADIUS: u8 = 20;
+/// How round the app's corners are, picked in Settings > Appearance. Round is the app as it has
+/// always looked; Soft is a gentler curve, about Spotify's; Sharp is nearly square. The level
+/// shapes surfaces only: controls keep their shape at every level — pills stay pills ([`pill`])
+/// and circles stay circles — since a flattened search box beside a round play button reads as
+/// half-finished rather than square.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Corners {
+    #[default]
+    Round,
+    Soft,
+    Sharp,
+}
+
+impl Corners {
+    pub const ALL: [Corners; 3] = [Corners::Round, Corners::Soft, Corners::Sharp];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Corners::Round => "Round",
+            Corners::Soft => "Soft",
+            Corners::Sharp => "Sharp",
+        }
+    }
+
+    /// The radii this level draws with.
+    pub fn radii(self) -> Radii {
+        match self {
+            Corners::Round => ROUND,
+            Corners::Soft => SOFT,
+            Corners::Sharp => SHARP,
+        }
+    }
+}
+
+/// The app's corner radii, by what they round. Every rounded surface takes its corner from one
+/// of these (or the art's own [`crate::widgets::ArtShape::radius`]) rather than from a number
+/// of its own, so that like things curve alike, at every [`Corners`] level. Pill-shaped
+/// controls take [`pill`] instead, which no level changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Radii {
+    /// The page, rail and queue cards. Their notches, edges, header wash and the artist hero
+    /// all follow it.
+    pub panel: u8,
+    /// Popups, menus, modals, the toast, the setting groups: anything floating or grouping.
+    pub popup: u8,
+    /// A row inside a popup — menu and dropdown rows, search suggestions — and egui's own
+    /// buttons and inputs. The popup's radius less its 6pt padding, so the curves nest.
+    pub item: u8,
+    /// Hover and selection fills on the page: track rows, the rail, icon buttons, tiles.
+    pub control: u8,
+    /// Placeholder text bars, the window buttons, badges.
+    pub small: u8,
+    /// Cover art's corner, which grows with the art — an eighth of its edge — between these.
+    /// A 200px card at a fixed small radius reads nearly square, but a radius past the top one
+    /// starts eating the image.
+    pub art_min: u8,
+    pub art_max: u8,
+}
+
+const ROUND: Radii = Radii {
+    // Ten read as a chamfer on a card a thousand points wide; sixteen still read short at the
+    // top, where the header wash meets the gutter at full contrast and the eye measures the
+    // curve hardest. Twenty is where the curve survives that scrutiny.
+    panel: 20,
+    popup: 12,
+    item: 6,
+    control: 8,
+    small: 4,
+    art_min: 8,
+    art_max: 16,
+};
+
+const SOFT: Radii = Radii {
+    panel: 10,
+    popup: 8,
+    item: 4,
+    control: 6,
+    small: 3,
+    art_min: 4,
+    art_max: 8,
+};
+
+const SHARP: Radii = Radii {
+    panel: 4,
+    popup: 4,
+    item: 2,
+    control: 2,
+    small: 2,
+    art_min: 2,
+    art_max: 2,
+};
+
+/// The frameless window's own corner on Linux, and the compositor's blur region cut to match
+/// it: Sharp's at every [`Corners`] level. A rounder window looked wrong tiled or split beside
+/// others, and a compositor that rounds windows itself (Hyprland, say) clips to its own shape
+/// anyway. Windows and macOS round the window themselves and ignore this.
+pub const WINDOW_RADIUS: u8 = 4;
+
+/// The level in use, as a [`Corners`] discriminant. Global rather than on the [`Palette`]
+/// because corners are drawn in places that hold no palette (the art's own shape, the card
+/// notches); [`set_corners`] is called wherever the palette is rebuilt from the settings.
+static CORNERS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_corners(corners: Corners) {
+    CORNERS.store(corners as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn corners() -> Corners {
+    match CORNERS.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Corners::Soft,
+        2 => Corners::Sharp,
+        _ => Corners::Round,
+    }
+}
+
+/// The radii in use.
+pub fn radii() -> Radii {
+    corners().radii()
+}
+
+/// The ends for `rect` of a chip, the search box, a toggle, a banner: fully round, at every
+/// [`Corners`] level.
+pub fn pill(rect: egui::Rect) -> CornerRadius {
+    CornerRadius::same((rect.width().min(rect.height()) / 2.0).clamp(0.0, 255.0) as u8)
+}
 
 pub const ROW_HEIGHT: f32 = 56.0;
 pub const ART_SIZE: f32 = 40.0;
@@ -87,7 +203,7 @@ pub const UPNEXT_MAX: f32 = 480.0;
 pub const TITLEBAR_HEIGHT: f32 = 56.0;
 
 /// The narrowest the page card is allowed to get. Home sets a song column no narrower than 340
-/// points and the card pads each side by [`PANEL_RADIUS`]; below this a page reads as a sliver
+/// points and the card pads each side by [`PAGE_INSET_X`]; below this a page reads as a sliver
 /// beside its panels, which is what a queue and lyrics open in a small window used to do to it.
 pub const PAGE_MIN_W: f32 = 400.0;
 /// The narrowest the window goes: the icon rail beside the page card at its floor, nothing to the
@@ -150,14 +266,6 @@ pub fn panel_limits(screen_w: f32, sidebar_w: f32, right_open: bool, right_cap: 
 /// layout, and it costs an outer margin rather than any layout arithmetic.
 pub const GUTTER: f32 = 8.0;
 
-/// The corner radius of those cards — the page card, the sidebar's, the queue panel's.
-///
-/// Ten read as a chamfer on a card a thousand points wide; sixteen still read short at the top,
-/// where the header wash meets the gutter at full contrast and the eye measures the curve
-/// hardest. Twenty is where the curve survives that scrutiny. The header wash caps itself in
-/// the same constant, so the tint never pokes past the card's own corners.
-pub const PANEL_RADIUS: u8 = 20;
-
 /// Every card's inner margins: a small side padding, and none top or bottom.
 ///
 /// The sides keep text off the card's own edge. The top and bottom are zero on purpose: each
@@ -177,18 +285,19 @@ pub const CARD_INSET_X: f32 = 8.0;
 
 /// The page card's inner margins. Wider at the sides than the rail and queue cards: the page
 /// holds titles, grids and long lists, and at 8 they sat cramped against the card's rounded
-/// edge. At the card radius the content column clears the corners outright, so no content
-/// ever reaches outside the silhouette.
+/// edge. At Round's card radius the content column clears the corners outright, so no content
+/// ever reaches outside the silhouette; the smaller radii keep the same margin, so the layout
+/// does not move when the corners change.
 pub const PAGE_INSET: egui::Margin = egui::Margin {
-    left: PANEL_RADIUS as i8,
-    right: PANEL_RADIUS as i8,
+    left: PAGE_INSET_X as i8,
+    right: PAGE_INSET_X as i8,
     top: 0,
     bottom: 0,
 };
 
 /// [`PAGE_INSET`]'s side padding as a scalar, for the geometry that grows the page's content
 /// rect back out to the card's own edges — the header wash, the artist hero, the corner repaint.
-pub const PAGE_INSET_X: f32 = PANEL_RADIUS as f32;
+pub const PAGE_INSET_X: f32 = 20.0;
 
 /// The page header's own top gap inside the content card.
 ///
@@ -618,8 +727,8 @@ pub fn apply(ctx: &egui::Context, palette: &Palette) {
     // them from the page, and every divider is supposed to be gone. Strokes drawn
     // explicitly — the toast, the window chrome, the focused search ring — are unaffected.
     v.window_stroke = Stroke::NONE;
-    v.window_corner_radius = CornerRadius::same(RADIUS + 2);
-    v.menu_corner_radius = CornerRadius::same(RADIUS);
+    v.window_corner_radius = CornerRadius::same(radii().popup);
+    v.menu_corner_radius = CornerRadius::same(radii().popup);
     v.window_shadow = egui::epaint::Shadow {
         offset: [0, 8],
         blur: 28,
@@ -633,7 +742,7 @@ pub fn apply(ctx: &egui::Context, palette: &Palette) {
         color: palette.shadow,
     };
 
-    let corner = CornerRadius::same(RADIUS_SMALL + 2);
+    let corner = CornerRadius::same(radii().item);
     for w in [
         &mut v.widgets.inactive,
         &mut v.widgets.hovered,
@@ -712,6 +821,40 @@ pub fn apply(ctx: &egui::Context, palette: &Palette) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round is the app as it always looked, and each level after it rounds every surface no
+    /// more than the one before — a level that rounded one thing more would read as a mistake.
+    /// (Pure: the global level is left alone, since other tests draw with it in parallel.)
+    #[test]
+    fn corner_levels_step_down_together() {
+        let round = Corners::Round.radii();
+        assert_eq!((round.panel, round.popup), (20, 12));
+        assert_eq!((round.item, round.control, round.small), (6, 8, 4));
+        assert_eq!((round.art_min, round.art_max), (8, 16));
+        let fields = |r: Radii| {
+            [
+                r.panel, r.popup, r.item, r.control, r.small, r.art_min, r.art_max,
+            ]
+        };
+        for pair in Corners::ALL.windows(2) {
+            let (a, b) = (fields(pair[0].radii()), fields(pair[1].radii()));
+            assert!(
+                a.iter().zip(&b).all(|(a, b)| b < a || (a == b && *a <= 2)),
+                "{pair:?}"
+            );
+        }
+        for c in Corners::ALL {
+            let r = c.radii();
+            assert!(r.art_min <= r.art_max && r.item <= r.popup && r.control <= r.panel);
+        }
+    }
+
+    /// A pill is fully round whatever the level: its ends are half its height.
+    #[test]
+    fn a_pill_is_round_at_every_level() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 30.0));
+        assert_eq!(pill(rect), CornerRadius::same(15));
+    }
 
     /// `Opacity::OFF` must be an identity: the default build paints exactly the colours it
     /// painted before opacity existed, for every one of the 256 values a channel can hold —

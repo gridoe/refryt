@@ -112,7 +112,7 @@ fn top_buttons(app: &mut App, ui: &mut egui::Ui) {
                 let t = widgets::lit(ui, &response);
                 ui.painter().rect_filled(
                     rect,
-                    egui::CornerRadius::same(theme::RADIUS),
+                    egui::CornerRadius::same(theme::radii().control),
                     p.glass(widgets::mix(p.surface, p.surface_hover, t)),
                 );
                 let nudge = widgets::press_offset(&response);

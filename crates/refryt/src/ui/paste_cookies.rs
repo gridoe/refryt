@@ -156,7 +156,7 @@ pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
                     *idx,
                     egui::Shape::rect_filled(
                         card.expand(grow),
-                        egui::CornerRadius::same(theme::RADIUS + 2 + grow as u8),
+                        egui::CornerRadius::same(theme::radii().popup + grow as u8),
                         egui::Color32::from_black_alpha(alpha),
                     ),
                 );
@@ -165,7 +165,7 @@ pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
                 backgrounds[3],
                 egui::Shape::rect_filled(
                     card,
-                    egui::CornerRadius::same(theme::RADIUS + 2),
+                    egui::CornerRadius::same(theme::radii().popup),
                     p.overlay,
                 ),
             );

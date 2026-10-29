@@ -8,6 +8,7 @@ use crate::model::LikeStatus;
 use crate::theme;
 use crate::ui::RowAction;
 use crate::widgets;
+use crate::widgets::Hint;
 
 /// The player bar's cover is drawn 56pt across and is always on screen.
 const BAR_ART_PT: f32 = 56.0;
@@ -347,7 +348,7 @@ pub fn player_bar(app: &mut App, ui: &mut egui::Ui) {
                 track.like == pressed,
                 true,
             )
-            .on_hover_text(crate::ui::tips::rate(up, track.like == pressed))
+            .hint(crate::ui::tips::rate(up, track.like == pressed))
             .clicked()
             {
                 rate = Some(RowAction::Rate {
@@ -377,14 +378,14 @@ pub fn player_bar(app: &mut App, ui: &mut egui::Ui) {
 
     if !compact
         && widgets::icon_button(&mut cui, &p, Icon::Shuffle, 16.0, app.q.is_shuffled())
-            .on_hover_text(crate::ui::tips::shuffle(app.q.is_shuffled()))
+            .hint(crate::ui::tips::shuffle(app.q.is_shuffled()))
             .clicked()
     {
         app.toggle_shuffle();
     }
     let mut skip_delta = 0isize;
     if widgets::icon_button(&mut cui, &p, Icon::SkipBackFilled, 16.0, false)
-        .on_hover_text(crate::ui::tips::PREVIOUS)
+        .hint(crate::ui::tips::PREVIOUS)
         .clicked()
     {
         skip_delta = -1;
@@ -394,7 +395,7 @@ pub fn player_bar(app: &mut App, ui: &mut egui::Ui) {
     // with the loading ring turning around its rim.
     let loading = widgets::track_loading(cui.ctx());
     let play = widgets::play_button(&mut cui, &p, playing || loading, PLAY_DIAMETER)
-        .on_hover_text(crate::ui::tips::play(playing || loading));
+        .hint(crate::ui::tips::play(playing || loading));
     if loading {
         widgets::paint_spinner(
             &cui,
@@ -408,7 +409,7 @@ pub fn player_bar(app: &mut App, ui: &mut egui::Ui) {
         app.toggle_playback();
     }
     if widgets::icon_button(&mut cui, &p, Icon::SkipForwardFilled, 16.0, false)
-        .on_hover_text(crate::ui::tips::NEXT)
+        .hint(crate::ui::tips::NEXT)
         .clicked()
     {
         skip_delta = 1;
@@ -426,7 +427,7 @@ pub fn player_bar(app: &mut App, ui: &mut egui::Ui) {
             16.0,
             app.repeat != RepeatMode::Off,
         )
-        .on_hover_text(crate::ui::tips::repeat(app.repeat))
+        .hint(crate::ui::tips::repeat(app.repeat))
         .clicked()
     {
         app.cycle_repeat();
@@ -478,14 +479,14 @@ pub fn player_bar(app: &mut App, ui: &mut egui::Ui) {
     if !compact && theme::right_panel_fits(screen_w) {
         vui.add_space(8.0);
         if widgets::icon_button(&mut vui, &p, Icon::ListMusic, 16.0, app.upnext_open)
-            .on_hover_text(crate::ui::tips::QUEUE)
+            .hint(crate::ui::tips::QUEUE)
             .clicked()
         {
             app.upnext_open = !app.upnext_open;
         }
         vui.add_space(8.0);
         if widgets::icon_button(&mut vui, &p, Icon::MicVocal, 16.0, app.lyrics_open)
-            .on_hover_text(crate::ui::tips::LYRICS)
+            .hint(crate::ui::tips::LYRICS)
             .clicked()
         {
             app.toggle_lyrics();
@@ -495,7 +496,7 @@ pub fn player_bar(app: &mut App, ui: &mut egui::Ui) {
     if !compact && app.now.track.as_ref().is_some_and(|t| t.wide) {
         vui.add_space(8.0);
         if widgets::icon_button(&mut vui, &p, Icon::Video, 16.0, app.video_open)
-            .on_hover_text(crate::ui::tips::video(app.video_open))
+            .hint(crate::ui::tips::video(app.video_open))
             .clicked()
         {
             app.toggle_video();

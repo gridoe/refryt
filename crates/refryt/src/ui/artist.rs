@@ -18,6 +18,7 @@ use egui::{pos2, vec2};
 use crate::app::App;
 use crate::ui::{HEADER_ART_PT, ListClick, track_shelf_pages};
 use crate::widgets;
+use crate::widgets::Hint;
 
 /// The hero's height floor and ceiling. Below the floor the name would crowd the art; above the
 /// ceiling a maximized window would spend most of the fold on a picture.
@@ -81,7 +82,7 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
 fn skeleton(app: &App, ui: &mut egui::Ui) {
     let p = app.palette;
     let round = |d: f32| egui::CornerRadius::same((d / 2.0) as u8);
-    let small = egui::CornerRadius::same(crate::theme::RADIUS_SMALL);
+    let small = egui::CornerRadius::same(crate::theme::radii().small);
     let inset_x = crate::theme::PAGE_INSET_X;
     let top = ui.cursor().min;
     let width = ui.available_width() + inset_x * 2.0;
@@ -91,7 +92,7 @@ fn skeleton(app: &App, ui: &mut egui::Ui) {
         pos2(app.content_rect.min.x - inset_x, app.content_rect.min.y),
         pos2(app.content_rect.max.x + inset_x, app.content_rect.max.y),
     );
-    let r = crate::theme::PANEL_RADIUS;
+    let r = crate::theme::radii().panel;
     widgets::skeleton_fill_in(
         ui,
         hero,
@@ -225,7 +226,7 @@ fn skeleton(app: &App, ui: &mut egui::Ui) {
 fn profile_skeleton(app: &App, ui: &mut egui::Ui) {
     use crate::ui::{CREDIT_AIR, CREDIT_CAP_HALF, DETAIL_TITLE_MAX, HEADER_ART_FLOOR_PT};
     let p = app.palette;
-    let small = egui::CornerRadius::same(crate::theme::RADIUS_SMALL);
+    let small = egui::CornerRadius::same(crate::theme::radii().small);
     let own = app.artist_id().is_some() && app.artist_id() == app.own_channel_id();
 
     // `page_header`'s art, circle, and the text block on its bottom edge.
@@ -286,7 +287,7 @@ fn profile_skeleton(app: &App, ui: &mut egui::Ui) {
             });
             let (rect, _) =
                 ui.allocate_exact_size(vec2(label_w + 28.0, 32.0), egui::Sense::hover());
-            widgets::skeleton_fill(ui, rect, egui::CornerRadius::same(16), &p);
+            widgets::skeleton_fill(ui, rect, crate::theme::pill(rect), &p);
             ui.add_space(6.0);
         }
         // `icon_button(.., 16.0, ..)`: a 30 pt box round a 16 pt glyph, drawn once the
@@ -504,7 +505,7 @@ fn add_rows(
 /// banner scrolled out. Image and scrim build their meshes from the same rows, so their edges
 /// can never disagree.
 fn hero_rows(rect: egui::Rect, slice: egui::Rect, start: f32) -> Vec<(f32, f32, f32)> {
-    let rad = crate::theme::PANEL_RADIUS as f32;
+    let rad = crate::theme::radii().panel as f32;
     let inset_at = |y: f32| {
         let dy = (slice.top() + rad - y).clamp(0.0, rad);
         rad - (rad * rad - dy * dy).max(0.0).sqrt()
@@ -628,14 +629,14 @@ fn action_row(app: &mut App, ui: &mut egui::Ui) {
             // reaching for first.
             if let Some(target) = &a.actions.mix
                 && widgets::icon_button(ui, &p, crate::icons::Icon::Radio, 20.0, false)
-                    .on_hover_text("Mix")
+                    .hint("Mix")
                     .clicked()
             {
                 play_target = Some(target.clone());
             }
             if let Some(target) = &a.actions.shuffle
                 && widgets::icon_button(ui, &p, crate::icons::Icon::Shuffle, 20.0, false)
-                    .on_hover_text("Shuffle")
+                    .hint("Shuffle")
                     .clicked()
             {
                 play_target = Some(target.clone());
@@ -911,7 +912,7 @@ fn you_liked(app: &mut App, ui: &mut egui::Ui) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             ui.painter().rect_filled(
                 rect.expand2(egui::vec2(8.0, 6.0)),
-                egui::CornerRadius::same(crate::theme::RADIUS),
+                egui::CornerRadius::same(crate::theme::radii().control),
                 p.glass(p.surface),
             );
         }
@@ -983,7 +984,7 @@ mod tests {
     }
 
     fn radius() -> f32 {
-        crate::theme::PANEL_RADIUS as f32
+        crate::theme::radii().panel as f32
     }
 
     #[test]

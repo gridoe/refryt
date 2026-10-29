@@ -73,11 +73,15 @@ pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
             for (grow, alpha) in [(14.0, 24), (7.0, 40), (2.0, 60)] {
                 painter.rect_filled(
                     card.expand(grow),
-                    egui::CornerRadius::same(theme::RADIUS + 2 + grow as u8),
+                    egui::CornerRadius::same(theme::radii().popup + grow as u8),
                     egui::Color32::from_black_alpha(alpha),
                 );
             }
-            painter.rect_filled(card, egui::CornerRadius::same(theme::RADIUS + 2), p.overlay);
+            painter.rect_filled(
+                card,
+                egui::CornerRadius::same(theme::radii().popup),
+                p.overlay,
+            );
 
             let mut body = ui.new_child(
                 egui::UiBuilder::new()

@@ -257,6 +257,8 @@ pub struct Settings {
     pub blur: bool,
     /// A thin edge around each card, solid window or see-through.
     pub card_outline: bool,
+    /// How round the corners are, everywhere.
+    pub corners: crate::theme::Corners,
     /// Fade a scrolled list out at an end with more of it past that end, in the cards (not the
     /// fullscreen player, which always fades). Off by default; it is worth most on a see-through
     /// window, where a list otherwise stops at a hard line over the desktop.
@@ -346,6 +348,7 @@ impl Default for Settings {
             opacity: Opacity::default(),
             blur: true,
             card_outline: true,
+            corners: crate::theme::Corners::default(),
             scroll_fades: false,
             adaptive_art_color: true,
             quality: Quality::default(),
@@ -396,6 +399,9 @@ impl Settings {
     /// The palette to paint with: the theme for the polarity on screen, at the chosen opacity.
     /// The one place those meet.
     pub fn palette(&self, ctx: &egui::Context, themes: &Themes) -> Palette {
+        // Not part of the palette, but rebuilt with it: whatever repaints the palette (and
+        // re-applies egui's style, whose widget corners read it) picks the level up.
+        crate::theme::set_corners(self.corners);
         let dark = self.theme.is_dark(ctx);
         match self.painting_theme(dark, themes) {
             Some(t) => t.palette(),
@@ -618,6 +624,24 @@ mod tests {
         };
         let back: Settings = serde_json::from_slice(&serde_json::to_vec(&off).unwrap()).unwrap();
         assert!(!back.card_outline);
+    }
+
+    /// Corners are Round for anyone whose file predates the setting, and another level survives
+    /// a save.
+    #[test]
+    fn corners_default_round_and_remember_the_choice() {
+        use crate::theme::Corners;
+        let old: Settings = serde_json::from_str(r#"{"opacity":0.5}"#).unwrap();
+        assert_eq!(old.corners, Corners::Round);
+        for corners in Corners::ALL {
+            let set = Settings {
+                corners,
+                ..Settings::default()
+            };
+            let back: Settings =
+                serde_json::from_slice(&serde_json::to_vec(&set).unwrap()).unwrap();
+            assert_eq!(back.corners, corners);
+        }
     }
 
     /// Scroll fades are off for anyone whose file predates the setting, and a choice to turn them
