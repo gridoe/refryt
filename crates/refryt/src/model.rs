@@ -304,11 +304,17 @@ impl Entry {
         match self {
             Entry::Song(t) | Entry::Video(t) => t.artist_line(),
             Entry::Artist(a) => a.subscribers.clone().unwrap_or_default(),
-            Entry::Album(a) => match &a.year {
-                Some(y) if !a.artist.is_empty() => format!("{} • {y}", a.artist),
-                Some(y) => y.clone(),
-                None => a.artist.clone(),
-            },
+            // "LISA • Single • 2025". The type only beside an artist: an artist's own page
+            // already splits its shelves by type, and its cards name no artist.
+            Entry::Album(a) => {
+                let kind = a.kind.as_deref().filter(|_| !a.artist.is_empty());
+                [Some(a.artist.as_str()), kind, a.year.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .filter(|f| !f.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" • ")
+            }
             Entry::Playlist(p) => p.detail(),
             Entry::Mood(_) => String::new(),
         }
@@ -858,6 +864,9 @@ pub struct Album {
     /// Absent where the page gave no play button; the header save control hides itself then.
     pub like_id: Option<String>,
     pub tracks: Vec<Track>,
+    /// The carousels under the tracks: "Other versions" of the release, and "Releases for you".
+    /// Empty where the raw browse that carries them failed.
+    pub shelves: Vec<Shelf>,
 }
 
 /// A full playlist: header plus playable tracks.
@@ -1483,6 +1492,37 @@ mod tests {
             thumbnail: None,
             actions: ArtistActions::default(),
         })
+    }
+
+    #[test]
+    fn a_release_says_its_artist_then_its_type() {
+        let release = |artist: &str, kind: Option<&str>, year: Option<&str>| {
+            Entry::Album(AlbumRef {
+                id: "MPREb".into(),
+                title: "t".into(),
+                artist: artist.into(),
+                year: year.map(Into::into),
+                kind: kind.map(Into::into),
+                thumbnail: None,
+            })
+            .subtitle()
+        };
+        assert_eq!(release("LISA", Some("Single"), None), "LISA • Single");
+        assert_eq!(
+            release("Fat Dog", Some("Album"), Some("2025")),
+            "Fat Dog • Album • 2025"
+        );
+        assert_eq!(
+            release("", Some("Single"), Some("2024")),
+            "2024",
+            "an artist page"
+        );
+        assert_eq!(
+            release("Fat Dog", None, Some("2025")),
+            "Fat Dog • 2025",
+            "search"
+        );
+        assert_eq!(release("", None, None), "");
     }
 
     fn album(id: &str) -> Entry {

@@ -1601,6 +1601,8 @@ pub struct App {
     pub(crate) playlist_loading: bool,
     /// The Suggestions under the open playlist, once fetched. Only your own playlists get them.
     pub(crate) playlist_suggestions: Option<crate::innertube::Suggestions>,
+    /// "Related playlists" under someone else's playlist, from its extras continuation.
+    pub(crate) playlist_related: Vec<crate::model::Shelf>,
     /// A Suggestions fetch — first or Refresh — is in flight.
     pub(crate) playlist_suggestions_loading: bool,
     pub(crate) playlist_error: Option<String>,
@@ -2141,6 +2143,7 @@ impl App {
             playlist_loading: false,
             playlist_suggestions: None,
             playlist_suggestions_loading: false,
+            playlist_related: Vec::new(),
             playlist_error: None,
             playlist_for: None,
             playlist_sort: PlaylistSort::default(),
@@ -3694,6 +3697,7 @@ impl App {
         self.playlist_original_order = None;
         self.playlist_suggestions = None;
         self.playlist_suggestions_loading = false;
+        self.playlist_related.clear();
         // No fetch, no loading state: a local playlist is already fully in memory, built fresh
         // each time so a rescan's updated tags show up without needing its own cache-busting.
         if let Some(lp) = self.local_playlists.iter().find(|p| p.id == id).cloned() {
@@ -5101,12 +5105,14 @@ impl App {
                     // Keep it for the rail's context menu too.
                     self.cache_rail_playlist(&id, &playlist);
                     // Suggestions only under your own lists, as on the site: a public playlist's
-                    // extras are other playlists, not songs to add.
-                    if playlist.editable
-                        && let Some(token) = playlist.extras.clone()
-                    {
-                        self.playlist_suggestions_loading = true;
-                        self.backend.fetch_playlist_suggestions(id.clone(), token);
+                    // extras are other playlists, not songs to add, and show as those.
+                    if let Some(token) = playlist.extras.clone() {
+                        if playlist.editable {
+                            self.playlist_suggestions_loading = true;
+                            self.backend.fetch_playlist_suggestions(id.clone(), token);
+                        } else {
+                            self.backend.fetch_playlist_related(id.clone(), token);
+                        }
                     }
                     self.playlist = Some(playlist);
                     self.apply_default_playlist_sort();
@@ -5168,6 +5174,10 @@ impl App {
                     }
                 }
                 Event::PlaylistSuggestions { .. } => {}
+                Event::PlaylistRelated { id, shelves } if self.playlist_is_for(&id) => {
+                    self.playlist_related = shelves;
+                }
+                Event::PlaylistRelated { .. } => {}
 
                 Event::PlaylistFailed { id, error } if self.playlist_is_for(&id) => {
                     self.playlist_loading = false;

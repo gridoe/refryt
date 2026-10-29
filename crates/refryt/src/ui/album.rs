@@ -47,7 +47,31 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         // Breathing room between the header and the first row.
         ui.add_space(10.0);
         track_list(app, ui);
+        shelves(app, ui);
     });
+}
+
+/// "Other versions" and "Releases for you" under the tracks, as YouTube Music shows them.
+fn shelves(app: &mut App, ui: &mut egui::Ui) {
+    // One snapshot for the frame: the carousel needs `&mut App`, which rules out borrowing the
+    // album out of `app` across the call.
+    let Some(shelves) = app.album.as_ref().map(|a| a.shelves.clone()) else {
+        return;
+    };
+    if !shelves.is_empty() {
+        // Clear of the last row: a shelf's title brings less air above it than a page section.
+        ui.add_space(16.0);
+    }
+    for s in &shelves {
+        crate::ui::shelf_carousel(
+            app,
+            ui,
+            "album",
+            s,
+            None,
+            crate::ui::MoreButton::Pill("More"),
+        );
+    }
 }
 
 fn header(app: &mut App, ui: &mut egui::Ui) {

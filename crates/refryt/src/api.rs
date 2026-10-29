@@ -747,6 +747,8 @@ impl Api {
                 // And those rows are the only place the tracks' own ratings live: the typed
                 // parser has no field for a like button, so every album track used to arrive
                 // unrated and a song you had liked did not look liked once it was playing.
+                // "Other versions" and "Releases for you", in the side column beside the rows.
+                out.shelves = innertube::parse_secondary_carousels(&json);
                 let states = innertube::track_states(&json);
                 merge_track_states(&mut out.tracks, &states);
                 // The rows' own credits, where a track's differ from the album's.
@@ -1006,6 +1008,15 @@ impl Api {
             .run_browse_owned(BrowseQuery::next_page(token), "playlist suggestions")
             .await?;
         Ok(innertube::parse_playlist_suggestions(&json))
+    }
+
+    /// The carousels below someone else's playlist ("Related playlists"), from its
+    /// [`model::Playlist::extras`] token. Empty when the response held none.
+    pub async fn playlist_related(&self, token: String) -> Result<Vec<model::Shelf>> {
+        let json = self
+            .run_browse_owned(BrowseQuery::next_page(token), "related playlists")
+            .await?;
+        Ok(innertube::parse_continuation_carousels(&json))
     }
 
     /// The next page of a playlist's tracks.
@@ -3057,6 +3068,8 @@ fn map_album(id: &str, a: GetAlbum) -> model::Album {
         ),
         like_id: a.audio_playlist_id.map(|p| p.get_raw().to_owned()),
         tracks,
+        // Read off the raw browse in `get_album`; the typed query has no field for them.
+        shelves: Vec::new(),
     }
 }
 
