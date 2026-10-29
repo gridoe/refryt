@@ -110,8 +110,27 @@ pub fn resize_handles(ui: &Ui) {
         }
         if r.drag_started() {
             ctx.send_viewport_cmd(ViewportCommand::BeginResize(*dir));
+            hand_off_pointer();
         }
     }
+}
+
+/// A press was just handed to the compositor to move or resize the window.
+static POINTER_HANDED_OFF: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Note that the press under way now belongs to the compositor: its release will not reach egui,
+/// so [`crate::app::App`]'s input hook supplies one (see [`take_pointer_handoff`]).
+fn hand_off_pointer() {
+    POINTER_HANDED_OFF.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a press was handed to the compositor since the last call. The compositor keeps the
+/// release of a press it moves or resizes the window with, and egui, left with a button that
+/// never came up, took every later frame for the same drag: nothing lit under the pointer and
+/// the wheel scrolled nothing until a click somewhere sent a release of its own.
+pub fn take_pointer_handoff() -> bool {
+    POINTER_HANDED_OFF.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// One window button. Close gets a red hover; the others a neutral one.
@@ -170,6 +189,7 @@ pub fn drag_surface(ui: &Ui, rect: Rect, decorated: bool, id_salt: &str) {
     );
     if drag.drag_started() {
         ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        hand_off_pointer();
     }
     if drag.double_clicked() {
         // macOS lets the user pick what a title-bar double-click does (Desktop & Dock, "Double-

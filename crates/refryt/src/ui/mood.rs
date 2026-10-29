@@ -57,7 +57,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                     &pl.author,
                     widgets::ArtShape::Square,
                     None,
-                    false,
+                    crate::ui::playlist_active(&app.now, &pl.id) && !app.now.paused,
                     false,
                 );
                 // The corner play button wins over the card click, the same contract every

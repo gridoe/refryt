@@ -6007,7 +6007,21 @@ impl App {
     /// song, and the generated next-up is appended as it arrives. A local file keeps the list it
     /// was clicked in, since there is no radio to seed from a filesystem path. Album, playlist,
     /// artist and library rows use [`Self::start_from`] instead: the list plays, then its radio.
+    ///
+    /// The song already loaded is paused or resumed instead, as its cover's button shows. The
+    /// queue can't tell: it has grown the song's radio, so it never equals the one-song list
+    /// [`Self::start_from`] compares, and every press restarted the song.
     pub(crate) fn play_row(&mut self, tracks: Vec<Track>, index: usize) {
+        let loaded = |t: &Track| {
+            self.now
+                .track
+                .as_ref()
+                .is_some_and(|nt| nt.video_id == t.video_id)
+        };
+        if tracks.get(index).is_some_and(loaded) {
+            self.toggle_playback();
+            return;
+        }
         match tracks.get(index) {
             Some(t) if t.local_path.is_none() => {
                 let track = t.clone();
@@ -7550,6 +7564,105 @@ impl App {
     }
 }
 
+/// A test aid for debug builds: `REFRYT_CLICK="x,y,button@secs;…"` clicks at those window
+/// points once each time comes, `button` being `primary`, `secondary` or `hover` (the pointer
+/// moves there and stays, no click) — how a screenshot
+/// run opens a right-click menu, which nothing outside the app can do on Wayland. A `button`
+/// of `scroll:<dy>` scrolls the wheel by that many points there instead (negative is down),
+/// and `drag:<x2>:<y2>` presses at the point, moves to the second one and releases there,
+/// spread over a few frames the way a real drag is.
+#[cfg(debug_assertions)]
+fn scripted_input(raw_input: &mut egui::RawInput) {
+    use std::sync::Mutex;
+    /// What one scripted input does.
+    #[derive(Clone, Copy)]
+    enum Act {
+        Click,
+        Scroll(f32),
+        Press,
+        Move,
+        Release,
+    }
+    /// An input still to come: where, which button, what, and when (seconds since start).
+    type Step = (f32, f32, egui::PointerButton, Act, f64);
+    static STEPS: Mutex<Option<Vec<Step>>> = Mutex::new(None);
+    let Ok(mut steps) = STEPS.lock() else {
+        return;
+    };
+    let steps = steps.get_or_insert_with(|| {
+        let mut out: Vec<Step> = Vec::new();
+        for spec in std::env::var("REFRYT_CLICK").unwrap_or_default().split(';') {
+            let Some((point, secs)) = spec.split_once('@') else {
+                continue;
+            };
+            let mut parts = point.split(',');
+            let (Some(x), Some(y), Some(at)) = (
+                parts.next().and_then(|v| v.trim().parse::<f32>().ok()),
+                parts.next().and_then(|v| v.trim().parse::<f32>().ok()),
+                secs.trim().parse::<f64>().ok(),
+            ) else {
+                continue;
+            };
+            let kind = parts.next().map(str::trim);
+            let primary = egui::PointerButton::Primary;
+            if let Some(to) = kind.and_then(|k| k.strip_prefix("drag:")) {
+                if let Some((x2, y2)) = to
+                    .split_once(':')
+                    .and_then(|(a, b)| Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)))
+                {
+                    out.push((x, y, primary, Act::Press, at));
+                    out.push((x2, y2, primary, Act::Move, at + 0.25));
+                    out.push((x2, y2, primary, Act::Release, at + 0.5));
+                }
+                continue;
+            }
+            // Only move the pointer there and leave it: how a screenshot gets a tooltip.
+            if kind == Some("hover") {
+                out.push((x, y, primary, Act::Move, at));
+                continue;
+            }
+            let button = match kind {
+                Some("secondary") => egui::PointerButton::Secondary,
+                _ => primary,
+            };
+            let act = kind
+                .and_then(|k| k.strip_prefix("scroll:"))
+                .and_then(|dy| dy.parse().ok())
+                .map_or(Act::Click, Act::Scroll);
+            out.push((x, y, button, act, at));
+        }
+        out
+    });
+    let now = crate::elapsed_since_start().as_secs_f64();
+    let Some(i) = steps.iter().position(|c| c.4 <= now) else {
+        return;
+    };
+    let (x, y, button, act, _) = steps.remove(i);
+    let pos = egui::pos2(x, y);
+    raw_input.events.push(egui::Event::PointerMoved(pos));
+    let press = |pressed| egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    match act {
+        Act::Scroll(dy) => raw_input.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, dy),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        }),
+        Act::Click => {
+            raw_input.events.push(press(true));
+            raw_input.events.push(press(false));
+        }
+        Act::Press => raw_input.events.push(press(true)),
+        Act::Move => {}
+        Act::Release => raw_input.events.push(press(false)),
+    }
+}
+
 impl eframe::App for App {
     /// eframe calls this periodically and on exit, so the queue survives a normal close as well
     /// as the five-second periodic save.
@@ -7576,103 +7689,32 @@ impl eframe::App for App {
         }
     }
 
-    /// A test aid for debug builds: `REFRYT_CLICK="x,y,button@secs;…"` clicks at those window
-    /// points once each time comes, `button` being `primary`, `secondary` or `hover` (the pointer
-    /// moves there and stays, no click) — how a screenshot
-    /// run opens a right-click menu, which nothing outside the app can do on Wayland. A `button`
-    /// of `scroll:<dy>` scrolls the wheel by that many points there instead (negative is down),
-    /// and `drag:<x2>:<y2>` presses at the point, moves to the second one and releases there,
-    /// spread over a few frames the way a real drag is.
-    #[cfg(debug_assertions)]
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        use std::sync::Mutex;
-        /// What one scripted input does.
-        #[derive(Clone, Copy)]
-        enum Act {
-            Click,
-            Scroll(f32),
-            Press,
-            Move,
-            Release,
+    /// Input before egui sees it. Two jobs: the button release a window move or resize swallowed
+    /// ([`crate::chrome::take_pointer_handoff`]), and, in debug builds, scripted input
+    /// ([`scripted_input`]).
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // The title bar and the window edges hand their press to the compositor, which moves or
+        // resizes the window and keeps the release for itself: egui never hears the button come
+        // back up. It then takes the press for a drag still in progress, and while a drag lasts
+        // no other widget lights under the pointer and no scroll area takes the wheel — until a
+        // click somewhere sends a release of its own. So the release is supplied here, the
+        // frame after the hand-off, ahead of anything else that frame brings.
+        if crate::chrome::take_pointer_handoff() {
+            let pos = ctx
+                .input(|i| i.pointer.latest_pos())
+                .unwrap_or(egui::Pos2::ZERO);
+            raw_input.events.insert(
+                0,
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            );
         }
-        /// An input still to come: where, which button, what, and when (seconds since start).
-        type Step = (f32, f32, egui::PointerButton, Act, f64);
-        static STEPS: Mutex<Option<Vec<Step>>> = Mutex::new(None);
-        let Ok(mut steps) = STEPS.lock() else {
-            return;
-        };
-        let steps = steps.get_or_insert_with(|| {
-            let mut out: Vec<Step> = Vec::new();
-            for spec in std::env::var("REFRYT_CLICK").unwrap_or_default().split(';') {
-                let Some((point, secs)) = spec.split_once('@') else {
-                    continue;
-                };
-                let mut parts = point.split(',');
-                let (Some(x), Some(y), Some(at)) = (
-                    parts.next().and_then(|v| v.trim().parse::<f32>().ok()),
-                    parts.next().and_then(|v| v.trim().parse::<f32>().ok()),
-                    secs.trim().parse::<f64>().ok(),
-                ) else {
-                    continue;
-                };
-                let kind = parts.next().map(str::trim);
-                let primary = egui::PointerButton::Primary;
-                if let Some(to) = kind.and_then(|k| k.strip_prefix("drag:")) {
-                    if let Some((x2, y2)) = to
-                        .split_once(':')
-                        .and_then(|(a, b)| Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)))
-                    {
-                        out.push((x, y, primary, Act::Press, at));
-                        out.push((x2, y2, primary, Act::Move, at + 0.25));
-                        out.push((x2, y2, primary, Act::Release, at + 0.5));
-                    }
-                    continue;
-                }
-                // Only move the pointer there and leave it: how a screenshot gets a tooltip.
-                if kind == Some("hover") {
-                    out.push((x, y, primary, Act::Move, at));
-                    continue;
-                }
-                let button = match kind {
-                    Some("secondary") => egui::PointerButton::Secondary,
-                    _ => primary,
-                };
-                let act = kind
-                    .and_then(|k| k.strip_prefix("scroll:"))
-                    .and_then(|dy| dy.parse().ok())
-                    .map_or(Act::Click, Act::Scroll);
-                out.push((x, y, button, act, at));
-            }
-            out
-        });
-        let now = crate::elapsed_since_start().as_secs_f64();
-        let Some(i) = steps.iter().position(|c| c.4 <= now) else {
-            return;
-        };
-        let (x, y, button, act, _) = steps.remove(i);
-        let pos = egui::pos2(x, y);
-        raw_input.events.push(egui::Event::PointerMoved(pos));
-        let press = |pressed| egui::Event::PointerButton {
-            pos,
-            button,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        };
-        match act {
-            Act::Scroll(dy) => raw_input.events.push(egui::Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Point,
-                delta: egui::vec2(0.0, dy),
-                phase: egui::TouchPhase::Move,
-                modifiers: egui::Modifiers::NONE,
-            }),
-            Act::Click => {
-                raw_input.events.push(press(true));
-                raw_input.events.push(press(false));
-            }
-            Act::Press => raw_input.events.push(press(true)),
-            Act::Move => {}
-            Act::Release => raw_input.events.push(press(false)),
-        }
+        #[cfg(debug_assertions)]
+        scripted_input(raw_input);
     }
 
     /// Transparent so the rounded corners show the desktop through them.

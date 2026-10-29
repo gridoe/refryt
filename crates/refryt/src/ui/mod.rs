@@ -1097,6 +1097,42 @@ pub(crate) fn entry_grid(
     }
 }
 
+/// Whether the loaded track is this card's own, playing or paused — what its corner button shows
+/// Pause for (while playing) and what makes a press pause or resume it instead of starting it
+/// over. A song/video card is active the same way a row is; an album and a playlist as
+/// [`album_active`] and [`playlist_active`] say.
+pub(crate) fn card_active(now: &crate::player::NowPlaying, item: &Entry) -> bool {
+    match item {
+        Entry::Song(t) | Entry::Video(t) => now
+            .track
+            .as_ref()
+            .is_some_and(|nt| nt.video_id == t.video_id),
+        Entry::Album(a) => album_active(now, &a.id),
+        Entry::Playlist(p) => playlist_active(now, &p.id),
+        _ => false,
+    }
+}
+
+/// An album has no id of its own on `now.track`, but every track carries the album it belongs
+/// to, which is exactly the signal needed.
+pub(crate) fn album_active(now: &crate::player::NowPlaying, id: &str) -> bool {
+    now.track
+        .as_ref()
+        .is_some_and(|nt| nt.album_id.as_deref() == Some(id))
+}
+
+/// No per-track field names a playlist the way `album_id` names an album (the same song can sit
+/// in many), so this reads the cache `NowPlaying::playlist_playing`'s own doc comment explains.
+pub(crate) fn playlist_active(now: &crate::player::NowPlaying, id: &str) -> bool {
+    now.playlist_playing.as_ref().is_some_and(|(pid, ids)| {
+        pid == id
+            && now
+                .track
+                .as_ref()
+                .is_some_and(|nt| ids.contains(&nt.video_id))
+    })
+}
+
 /// One card in a grid or carousel: shape, art, menu and click, shared so the two layouts
 /// cannot drift apart.
 #[allow(clippy::too_many_arguments)]
@@ -1117,36 +1153,7 @@ fn grid_card(
         _ if item.is_artist() => widgets::ArtShape::Circle,
         _ => widgets::ArtShape::Square,
     };
-    // A song/video card is active the same way a row is. An album has no id of its own on
-    // `now.track` — but every track already carries the album it belongs to, which is exactly
-    // the signal needed here. A playlist has no such per-track field (the same song can sit in
-    // many), so its own branch below reads `now.playlist_playing` instead.
-    let playing = match item {
-        Entry::Song(t) | Entry::Video(t) => {
-            now.track
-                .as_ref()
-                .is_some_and(|nt| nt.video_id == t.video_id)
-                && !now.paused
-        }
-        Entry::Album(a) => {
-            now.track
-                .as_ref()
-                .is_some_and(|nt| nt.album_id.as_deref() == Some(a.id.as_str()))
-                && !now.paused
-        }
-        // No per-track field names a playlist the way `album_id` names an album, so this
-        // reads the cache `NowPlaying::playlist_playing`'s own doc comment explains.
-        Entry::Playlist(p) => {
-            now.playlist_playing.as_ref().is_some_and(|(id, ids)| {
-                id == &p.id
-                    && now
-                        .track
-                        .as_ref()
-                        .is_some_and(|nt| ids.contains(&nt.video_id))
-            }) && !now.paused
-        }
-        _ => false,
-    };
+    let playing = card_active(now, item) && !now.paused;
     // Grids are not virtualised — every card in the shelf runs this loop, on- or off-screen —
     // so skip the texture request *and* the `subtitle()` string build for the ones scrolled
     // out of view. The card's size is fixed regardless of its subtitle, so layout is unmoved.
@@ -2853,6 +2860,14 @@ pub(crate) fn finish_grid(app: &mut crate::app::App, shelf: &Shelf, grid: GridOu
     if let Some(i) = grid.played
         && let Some(item) = shelf.items.get(i)
     {
+        // The card's own thing is what is loaded, so its button showed Pause (or would, paused):
+        // pause or resume it. Starting it again restarted a song, whose queue has grown its radio
+        // and so never matches `start_from`'s one-song list, and regenerated a mix, whose fresh
+        // fetch no longer holds the song playing.
+        if card_active(&app.now, item) {
+            app.toggle_playback();
+            return;
+        }
         match item {
             Entry::Album(a) => {
                 app.play_album(a.id.clone());
@@ -3459,6 +3474,51 @@ mod tests {
             1,
             "never fewer than one card"
         );
+    }
+
+    /// A card's button pauses or resumes what is loaded instead of starting it over, so the
+    /// check must hold while paused, and a playlist card only while its song is still playing.
+    #[test]
+    fn a_card_is_active_while_its_own_song_is_loaded() {
+        let mut now = crate::player::NowPlaying {
+            track: Some(subtitle_track()),
+            paused: true,
+            ..Default::default()
+        };
+        let song = Entry::Song(subtitle_track());
+        let mut other = subtitle_track();
+        other.video_id = "other".to_owned();
+        assert!(card_active(&now, &song), "paused still counts");
+        assert!(!card_active(&now, &Entry::Song(other)));
+
+        let album = |id: &str| {
+            Entry::Album(crate::model::AlbumRef {
+                id: id.to_owned(),
+                title: String::new(),
+                artist: String::new(),
+                year: None,
+                kind: None,
+                thumbnail: None,
+            })
+        };
+        assert!(card_active(&now, &album("MPREalbum")));
+        assert!(!card_active(&now, &album("MPREother")));
+
+        let mix = Entry::Playlist(crate::model::PlaylistRef {
+            id: "RDmix".to_owned(),
+            title: String::new(),
+            author: String::new(),
+            author_id: None,
+            track_count: None,
+            thumbnail: None,
+            editable: false,
+            source: crate::model::PlaylistSource::YouTube,
+        });
+        assert!(!card_active(&now, &mix), "no card started it");
+        now.playlist_playing = Some(("RDmix".to_owned(), vec!["vid".to_owned()]));
+        assert!(card_active(&now, &mix));
+        now.playlist_playing = Some(("RDmix".to_owned(), vec!["gone".to_owned()]));
+        assert!(!card_active(&now, &mix), "playback moved past the mix");
     }
 
     fn subtitle_track() -> crate::model::Track {
