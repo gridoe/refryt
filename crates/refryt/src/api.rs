@@ -87,12 +87,19 @@ fn default_headers(page_id: Option<&str>) -> reqwest::header::HeaderMap {
     headers
 }
 
+/// How much header a reply may carry over HTTP/2. hyper's default is 16 KiB, and YouTube Music's
+/// signed-in page has outgrown it: two report-only policy headers of 7 and 6 KB bring the reply to
+/// about 18 KB, which hyper refuses as a protocol error. Every signed-in request then failed as
+/// though offline, while the smaller anonymous replies kept working.
+const MAX_REPLY_HEADERS: u32 = 256 * 1024;
+
 fn http_client_for(page_id: Option<&str>) -> Result<ytmapi_rs::Client> {
     let headers = default_headers(page_id);
 
     let inner = reqwest::Client::builder()
         .use_rustls_tls()
         .gzip(true)
+        .http2_max_header_list_size(MAX_REPLY_HEADERS)
         .cookie_store(true)
         .default_headers(headers)
         .build()
@@ -2536,6 +2543,7 @@ async fn refused_page(error: &ytmapi_rs::Error, cookie: &str) -> Option<Refusal>
     let client = reqwest::Client::builder()
         .use_rustls_tls()
         .gzip(true)
+        .http2_max_header_list_size(MAX_REPLY_HEADERS)
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .ok()?;
