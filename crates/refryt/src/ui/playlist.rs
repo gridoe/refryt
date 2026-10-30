@@ -262,10 +262,14 @@ fn sort_control(app: &mut App, ui: &mut egui::Ui, anchor: egui::Pos2) {
 
 fn header(app: &mut App, ui: &mut egui::Ui) {
     let signed_in = app.signed_in();
-    let playing = app
-        .playlist
-        .as_ref()
-        .is_some_and(|pl| app.is_playing_any(&pl.tracks));
+    // The card's own reading too: a mix fetched again comes back as another list, which the
+    // song playing may not be in, though its card says it is playing.
+    let playing = app.playlist.as_ref().is_some_and(|pl| {
+        app.is_playing_any(&pl.tracks)
+            || (crate::ui::playlist_active(&app.now, &pl.id)
+                && app.playback_started
+                && app.player.as_ref().is_some_and(|p| !p.state().paused))
+    });
 
     // Read everything the header and its ••• menu need while `app.playlist` / `app.library`
     // are borrowed: the menu takes the real track slice, not a per-frame clone of a list that
@@ -346,6 +350,7 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
                 // "Owner • N songs • duration" on one line instead of a row each.
                 owner: owner.as_ref(),
                 credit_air: 4.0,
+                credit_pt: 13.0,
                 play_size: Some(crate::ui::DETAIL_PLAY_PT),
                 playing,
                 save_in_library: signed_in
@@ -432,7 +437,11 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
             .unwrap_or_default();
         // Already on this playlist: the button just showed Pause, so clicking it again means
         // resume/pause, not "start over from track 1".
-        if app.queue_matches(&tracks) {
+        let loaded = app
+            .playlist
+            .as_ref()
+            .is_some_and(|pl| crate::ui::playlist_active(&app.now, &pl.id));
+        if loaded || app.queue_matches(&tracks) {
             app.toggle_playback();
         } else {
             app.start_from(tracks, 0);

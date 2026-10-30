@@ -2509,6 +2509,7 @@ impl App {
             || self.settings.opacity != before.opacity
             || self.settings.card_outline != before.card_outline
             || self.settings.corners != before.corners
+            || self.settings.compositor_corners != before.compositor_corners
         {
             self.repaint_palette(ctx);
         }
@@ -3473,6 +3474,14 @@ impl App {
     /// new visit has begun. The shelves on screen are deliberately kept: a revisit refreshes
     /// underneath the old list rather than showing the loading skeleton again.
     fn note_route_entered(&mut self) {
+        // The row an album was opened on is marked for that one visit. A focus waiting for its
+        // album is kept only while that album is the page being entered.
+        crate::widgets::set_focused_row(&self.ctx, None);
+        if crate::widgets::album_focus(&self.ctx)
+            .is_some_and(|f| self.current_route() != Route::Album(f.album_id))
+        {
+            crate::widgets::set_album_focus(&self.ctx, None);
+        }
         // Settings is where the themes folder is offered, so what is in it is looked at fresh.
         if matches!(self.current_route(), Route::Settings) {
             self.theme_watch.check();
@@ -8014,7 +8023,7 @@ impl eframe::App for App {
                 size.y.round().max(0.0) as u32,
             ),
             if rounded {
-                theme::WINDOW_RADIUS as u32
+                theme::window_radius() as u32
             } else {
                 0
             },

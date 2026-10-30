@@ -105,6 +105,51 @@ fn selected(ctx: &egui::Context) -> Option<String> {
 
 pub(crate) fn set_selected(ctx: &egui::Context, id: Option<String>) {
     ctx.data_mut(|d| d.insert_temp(selection_key(), id));
+    // A row picked by hand takes over from the one an album was opened on.
+    set_focused_row(ctx, None);
+}
+
+/// The song a card was clicked on to open its album: the album page marks that song's row
+/// when it arrives, and scrolls it into view.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AlbumFocus {
+    pub album_id: String,
+    pub video_id: String,
+    /// For when the card's song is not the album's own copy of it: a music video, or another
+    /// upload of the same recording, has a different video id from the album's track.
+    pub title: String,
+}
+
+fn album_focus_key() -> egui::Id {
+    egui::Id::new("ytm-album-focus")
+}
+
+/// Set as a card opens its album; taken by that album's page, or dropped when some other page
+/// is entered first, so a later visit to the album does not mark a song nobody asked for.
+pub(crate) fn set_album_focus(ctx: &egui::Context, focus: Option<AlbumFocus>) {
+    ctx.data_mut(|d| d.insert_temp(album_focus_key(), focus));
+}
+
+pub(crate) fn album_focus(ctx: &egui::Context) -> Option<AlbumFocus> {
+    ctx.data(|d| {
+        d.get_temp::<Option<AlbumFocus>>(album_focus_key())
+            .flatten()
+    })
+}
+
+fn focused_row_key() -> egui::Id {
+    egui::Id::new("ytm-focused-row")
+}
+
+/// The album row an [`AlbumFocus`] landed on, drawn as selected whatever the click mode, in the
+/// page's list and not the queue's. Cleared by a click on the list, by a selection, and by
+/// entering any page.
+pub(crate) fn set_focused_row(ctx: &egui::Context, id: Option<String>) {
+    ctx.data_mut(|d| d.insert_temp(focused_row_key(), id));
+}
+
+fn focused_row(ctx: &egui::Context) -> Option<String> {
+    ctx.data(|d| d.get_temp::<Option<String>>(focused_row_key()).flatten())
 }
 
 /// Whether a row/card body click should play `id`, applying the double-click-to-play setting.
@@ -305,6 +350,18 @@ pub fn tooltip_right(
         ui.add(egui::Label::new(text));
     });
     response
+}
+
+/// "Song titles open their album": set from the settings, read where a title is drawn.
+static TITLE_OPENS_ALBUM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_title_opens_album(on: bool) {
+    TITLE_OPENS_ALBUM.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a song's title (a row's, a card's) opens its album. The player bar's always does.
+pub fn title_opens_album() -> bool {
+    TITLE_OPENS_ALBUM.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A hint's own frame: the popup's, with a lighter shadow than a menu's. A hint is a few words
@@ -744,6 +801,10 @@ pub struct TrackRow<'a> {
     /// fill: [`theme::ROW_LEFT_INSET_TIGHT`] instead of [`theme::ROW_LEFT_INSET`]. The queue sets
     /// it, where the narrow card makes every point of the row count.
     pub tight: bool,
+    /// A height other than [`row_height`]'s, for rows laid out by hand (Home's shelves). Such
+    /// a row keeps its cover as near the fill's left edge as its top and bottom:
+    /// [`theme::SHELF_FILL_GAP`].
+    pub height: Option<f32>,
     /// Distinguishes this row's interactive pieces from its neighbours'.
     pub id_salt: usize,
     /// Right-click menu. `None` for rows that are not songs.
@@ -2027,15 +2088,27 @@ pub fn skeleton_song_grid(
     // The real grid's own gutter (`spec_pages`).
     let gap = 12.0;
     let col_w = (width - gap * (cols - 1) as f32) / cols as f32;
-    let (area, _) =
-        ui.allocate_exact_size(vec2(width, theme::ROW_HEIGHT * rows as f32), Sense::hover());
+    // The real grid's row pitch: a shelf row and the list gap under all but the last.
+    let row_h = theme::SHELF_ROW_HEIGHT;
+    let pitch = row_h + ui.spacing().item_spacing.y;
+    let height = (pitch * rows as f32 - ui.spacing().item_spacing.y).max(0.0);
+    let (area, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     for c in 0..cols {
         for r in 0..rows {
             let rect = Rect::from_min_size(
-                area.min + vec2(c as f32 * (col_w + gap), r as f32 * theme::ROW_HEIGHT),
-                vec2(col_w, theme::ROW_HEIGHT),
+                area.min + vec2(c as f32 * (col_w + gap), r as f32 * pitch),
+                vec2(col_w, row_h),
             );
-            skeleton_row_at(ui, palette, rect, c * rows + r, numbered, false, false);
+            skeleton_row_at(
+                ui,
+                palette,
+                rect,
+                c * rows + r,
+                numbered,
+                false,
+                false,
+                theme::SHELF_FILL_GAP,
+            );
         }
     }
 }
@@ -2054,6 +2127,7 @@ const SKELETON_TEXT_WIDTHS: [(f32, f32); 5] = [
 /// One placeholder row painted into `rect`, where [`track_row`] paints its parts: the number
 /// (when `numbered`), the cover (unless `hide_art`), title and credit, and the duration (when
 /// `duration`). `i` picks the bars' widths.
+#[allow(clippy::too_many_arguments)]
 fn skeleton_row_at(
     ui: &Ui,
     palette: &Palette,
@@ -2062,6 +2136,7 @@ fn skeleton_row_at(
     numbered: bool,
     hide_art: bool,
     duration: bool,
+    left_inset: f32,
 ) {
     if !ui.is_rect_visible(rect) {
         return;
@@ -2075,7 +2150,7 @@ fn skeleton_row_at(
     if numbered && skeleton_visible(ui) {
         ui.painter().text(
             egui::pos2(
-                rect.left() + theme::ROW_LEFT_INSET + num_w - theme::ROW_NUMBER_GAP,
+                rect.left() + left_inset + num_w - theme::ROW_NUMBER_GAP,
                 rect.center().y,
             ),
             egui::Align2::RIGHT_CENTER,
@@ -2086,7 +2161,7 @@ fn skeleton_row_at(
     }
     let art = Rect::from_min_size(
         egui::pos2(
-            rect.left() + theme::ROW_LEFT_INSET + num_w,
+            rect.left() + left_inset + num_w,
             rect.center().y - theme::ART_SIZE / 2.0,
         ),
         vec2(theme::ART_SIZE, theme::ART_SIZE),
@@ -2149,7 +2224,16 @@ fn skeleton_list(ui: &mut Ui, palette: &Palette, n: usize, numbered: bool, hide_
             vec2(ui.available_width(), theme::ROW_HEIGHT),
             Sense::hover(),
         );
-        skeleton_row_at(ui, palette, rect, i, numbered, hide_art, true);
+        skeleton_row_at(
+            ui,
+            palette,
+            rect,
+            i,
+            numbered,
+            hide_art,
+            true,
+            theme::ROW_LEFT_INSET,
+        );
     }
 }
 
@@ -2429,6 +2513,7 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
         shape,
         hide_art,
         tight,
+        height,
         id_salt,
         menu,
         like,
@@ -2445,12 +2530,17 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
     let (rect, response) = ui.allocate_exact_size(
         vec2(
             ui.available_width(),
-            row_height(tight, ui.available_width()),
+            height.unwrap_or_else(|| row_height(tight, ui.available_width())),
         ),
         Sense::click_and_drag(),
     );
-    // The queue's duration sits nearer the fill's right edge, as its cover does the left.
-    let right_pad = if tight { 10.0 } else { 20.0 };
+    // The queue's duration sits nearer the fill's right edge, as its cover does the left, and
+    // so does a shelf's.
+    let right_pad = if tight || height.is_some() {
+        10.0
+    } else {
+        20.0
+    };
     // A narrow row — the open queue on a small window — compresses instead of starving:
     // the number column and the art yield first, and what they give back is the title's
     // room. A full-size art and a 30pt number column left 21pt of it on a 215pt card,
@@ -2511,6 +2601,8 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
     let row_art = row_art_size(rect.width());
     let left_inset = if tight {
         theme::ROW_LEFT_INSET_TIGHT
+    } else if height.is_some() {
+        theme::SHELF_FILL_GAP
     } else {
         theme::ROW_LEFT_INSET
     };
@@ -2567,9 +2659,12 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
             None => response.clicked(),
         }
     };
-    let selected = menu
-        .as_ref()
-        .is_some_and(|m| is_selected(ui.ctx(), m.track.video_id.as_str()));
+    // The album row a card opened the album on is marked on the page's own list only: the
+    // queue (the one tight list) may hold the same song, and has no reason to mark it.
+    let selected = menu.as_ref().is_some_and(|m| {
+        let id = m.track.video_id.as_str();
+        is_selected(ui.ctx(), id) || (!tight && focused_row(ui.ctx()).as_deref() == Some(id))
+    });
     if ui.is_rect_visible(rect) {
         let radius = CornerRadius::same(theme::radii().control);
         // The selection (a single click in double-click mode) sits under the hover fill, so the
@@ -2721,7 +2816,7 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
         // below it already can, through the exact machinery that lets that link coexist with
         // clicking elsewhere on the row to play it (`ListClick::Link` vs `ListClick::Row`).
         let mut title_parts = no_subtitle();
-        title_parts[0] = Some(match album_id {
+        title_parts[0] = Some(match album_id.filter(|_| title_opens_album()) {
             Some(id) => Part::link(title, LinkTarget::Album(id)),
             None => Part::plain(title),
         });
@@ -6047,6 +6142,7 @@ mod tests {
                         shape: ArtShape::Square,
                         hide_art: false,
                         tight: false,
+                        height: None,
                         id_salt: 0,
                         menu: Some(RowMenu {
                             track: &track,
@@ -6276,6 +6372,7 @@ mod tests {
                         shape: ArtShape::Square,
                         hide_art: true,
                         tight: false,
+                        height: None,
                         id_salt: 0,
                         menu: Some(RowMenu {
                             track: &track,
@@ -6410,6 +6507,7 @@ mod tests {
                         shape: ArtShape::Square,
                         hide_art: true,
                         tight: false,
+                        height: None,
                         id_salt: 0,
                         menu: Some(RowMenu {
                             track: &track,
