@@ -198,7 +198,7 @@ fn visible_range(
 /// math and both spacers — has to use this same number, or the computed extent changes with how
 /// many rows happen to be visible. That mismatch is what made lists jitter and overshoot at the
 /// bottom: the spacers reserved `row_h` per skipped row while the drawn rows each paid `spacing`.
-fn row_pitch(row_h: f32, item_spacing: f32) -> f32 {
+pub(crate) fn row_pitch(row_h: f32, item_spacing: f32) -> f32 {
     row_h + item_spacing
 }
 
@@ -574,6 +574,7 @@ pub(crate) fn spec_rows<'d>(
                 shape: s.shape,
                 hide_art: s.hide_art,
                 tight: s.tight,
+                height: None,
                 id_salt: i,
                 menu: s.menu,
                 like,
@@ -681,6 +682,7 @@ fn paint_grid_cell<'d>(
             shape: s.shape,
             hide_art: false,
             tight: false,
+            height: Some(theme::SHELF_ROW_HEIGHT),
             id_salt: i,
             menu: s.menu,
             like,
@@ -823,7 +825,7 @@ fn spec_pages<'d>(
                 let x = top_left.x + c as f32 * (col_w + gap);
                 let cell_rect = egui::Rect::from_min_size(
                     egui::pos2(x, top_left.y),
-                    egui::vec2(col_w, theme::ROW_HEIGHT),
+                    egui::vec2(col_w, theme::SHELF_ROW_HEIGHT),
                 );
                 let (click, act) =
                     paint_grid_cell(ui, palette, images, backend, liked, cell_rect, i, spec(i));
@@ -834,7 +836,12 @@ fn spec_pages<'d>(
                     action = act;
                 }
             }
-            ui.add_space(theme::ROW_HEIGHT);
+            // The gap a list leaves between its rows (see `row_pitch`), so two rows' hover
+            // fills never touch.
+            ui.add_space(theme::SHELF_ROW_HEIGHT);
+            if r + 1 < rows_here {
+                ui.add_space(ui.spacing().item_spacing.y);
+            }
         }
     });
     stats.rows(end - start, count);
@@ -1134,7 +1141,8 @@ pub(crate) fn album_active(now: &crate::player::NowPlaying, id: &str) -> bool {
 /// in many), so this reads the cache `NowPlaying::playlist_playing`'s own doc comment explains.
 pub(crate) fn playlist_active(now: &crate::player::NowPlaying, id: &str) -> bool {
     now.playlist_playing.as_ref().is_some_and(|(pid, ids)| {
-        pid == id
+        // A card and the page it opens may name it with and without the "VL" prefix.
+        crate::model::bare_playlist_id(pid) == crate::model::bare_playlist_id(id)
             && now
                 .track
                 .as_ref()
@@ -1242,7 +1250,8 @@ fn grid_card(
     };
     let selected = track_id.is_some_and(|id| widgets::is_selected(ui.ctx(), id));
     // The album a song card opens. The card body is the target now, so the title carries no
-    // separate link of its own.
+    // separate link of its own. Not gated by "Song titles open their album": that is for list
+    // rows, and a card is there to be opened.
     let album_id = match item {
         Entry::Song(t) | Entry::Video(t) => t.album_id.as_deref(),
         _ => None,
@@ -1270,6 +1279,17 @@ fn grid_card(
     } else {
         None
     };
+    // The album page marks the song it was opened on.
+    if let (true, Some(id), Entry::Song(t) | Entry::Video(t)) = (navigated, album_id, item) {
+        widgets::set_album_focus(
+            ui.ctx(),
+            Some(widgets::AlbumFocus {
+                album_id: id.to_owned(),
+                video_id: t.video_id.clone(),
+                title: t.title.clone(),
+            }),
+        );
+    }
     let clicked = if navigated {
         false
     } else {
@@ -1968,6 +1988,9 @@ pub(crate) struct PageHeader<'a> {
     /// way the playlist's stats aren't, so it hugs the name; a page whose credit line is a
     /// quieter aside (the playlist's owner, the artist's audience count) asks for more.
     pub credit_air: f32,
+    /// The artist line's size. The album's artists read a touch larger than the 13 pt the
+    /// other pages' second lines use, for the same reason they hug the name.
+    pub credit_pt: f32,
     /// Play button diameter. `None` draws no Play — the artist page brings its own buttons.
     pub play_size: Option<f32>,
     /// Whether the track currently loaded is one of this page's own and is actively playing
@@ -2129,13 +2152,24 @@ pub(crate) fn page_header(
             palette.dim,
         );
     }
-    crate::emoji::paint_line(
+    let title_w = crate::emoji::paint_line(
         ui,
         egui::pos2(tx, y),
         &shown_title,
         title_font.clone(),
         palette.text,
     );
+    // A name too long even at the smallest size ends in an ellipsis; hovering it shows the
+    // whole of it.
+    if shown_title != h.title {
+        let hit = egui::Rect::from_min_size(
+            egui::pos2(tx, y - title_size * 0.6),
+            egui::vec2(title_w, title_size * 1.2),
+        );
+        use widgets::Hint as _;
+        ui.interact(hit, ui.id().with((h.salt, "title")), egui::Sense::hover())
+            .hint(h.title);
+    }
     // The last text line painted, so the controls' baseline stays under it whether or not
     // the header has an artist line and a meta line.
     let mut last_line = y;
@@ -2187,7 +2221,7 @@ pub(crate) fn page_header(
                 &subtitle,
                 None,
                 h.salt,
-                theme::regular(13.0),
+                theme::regular(h.credit_pt),
                 palette.secondary,
             ) {
                 link = Some(link_route(target));
@@ -3200,8 +3234,10 @@ pub(crate) fn offline_banner(app: &mut crate::app::App, ui: &mut egui::Ui) {
     ui.add_space(12.0);
     // A fixed-height strip, painted by hand: a `Frame` takes the height its parent offers, and on
     // a page laid out to fill (Settings) it grew into a pale slab across the whole card.
+    // Tall enough for the Downloads button to sit inside it with the same 4pt all round, its
+    // round ends nested in the strip's.
     let (strip, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::hover());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
     ui.painter()
         .rect_filled(strip, theme::pill(strip), p.glass(p.surface));
     let mut row = ui.new_child(
@@ -3225,7 +3261,8 @@ pub(crate) fn offline_banner(app: &mut crate::app::App, ui: &mut egui::Ui) {
             .color(p.secondary),
     );
     row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.add_space(-8.0);
+        // From the strip's 14pt padding back to 4pt off its right edge, as above and below.
+        ui.add_space(-10.0);
         open = crate::widgets::outline_button(ui, &p, "Downloads").clicked();
     });
     ui.add_space(10.0);
@@ -3527,6 +3564,8 @@ mod tests {
         assert!(!card_active(&now, &mix), "no card started it");
         now.playlist_playing = Some(("RDmix".to_owned(), vec!["vid".to_owned()]));
         assert!(card_active(&now, &mix));
+        // The page the card opens names it with the "VL" prefix.
+        assert!(playlist_active(&now, "VLRDmix"));
         now.playlist_playing = Some(("RDmix".to_owned(), vec!["gone".to_owned()]));
         assert!(!card_active(&now, &mix), "playback moved past the mix");
     }

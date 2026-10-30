@@ -181,6 +181,7 @@ fn header(
                 meta: Some(&meta),
                 owner: Some(&owner),
                 credit_air: 4.0,
+                credit_pt: 13.0,
                 play_size: Some(crate::ui::DETAIL_PLAY_PT),
                 playing,
                 save_in_library: None,

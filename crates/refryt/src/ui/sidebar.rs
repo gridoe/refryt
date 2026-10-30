@@ -479,7 +479,7 @@ fn rail_row_compact(
         }
         let art_rect = Rect::from_center_size(
             rect.center(),
-            vec2(theme::RAIL_ART_SIZE, theme::RAIL_ART_SIZE),
+            vec2(theme::RAIL_ART_SIZE_COMPACT, theme::RAIL_ART_SIZE_COMPACT),
         );
         widgets::paint_art(ui, palette, art_rect, art, row.shape);
         if response.hovered() {
@@ -524,7 +524,7 @@ fn rail_row(
         }
 
         let art_rect = Rect::from_center_size(
-            rect.left_center() + vec2(6.0 + theme::RAIL_ART_SIZE / 2.0, 0.0),
+            rect.left_center() + vec2(theme::RAIL_FILL_GAP + theme::RAIL_ART_SIZE / 2.0, 0.0),
             vec2(theme::RAIL_ART_SIZE, theme::RAIL_ART_SIZE),
         );
         widgets::paint_art(ui, palette, art_rect, art, row.shape);

@@ -112,11 +112,36 @@ const SHARP: Radii = Radii {
     art_max: 2,
 };
 
-/// The frameless window's own corner on Linux, and the compositor's blur region cut to match
-/// it: Sharp's at every [`Corners`] level. A rounder window looked wrong tiled or split beside
-/// others, and a compositor that rounds windows itself (Hyprland, say) clips to its own shape
-/// anyway. Windows and macOS round the window themselves and ignore this.
-pub const WINDOW_RADIUS: u8 = 4;
+/// The frameless window's own corner on Linux at the `corners` level, and the compositor's blur
+/// region cut to match it; none at all with "Compositor corners" on, so a compositor that rounds
+/// windows (Hyprland, say) does it alone and the window is square without one. Windows and macOS
+/// round the window themselves and ignore all of this.
+pub fn window_radius_for(corners: Corners, compositor: bool) -> u8 {
+    if compositor {
+        return 0;
+    }
+    match corners {
+        Corners::Round => 20,
+        Corners::Soft => 10,
+        Corners::Sharp => 4,
+    }
+}
+
+/// "Compositor corners", beside [`CORNERS`] and for the same reason.
+static COMPOSITOR_CORNERS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_compositor_corners(on: bool) {
+    COMPOSITOR_CORNERS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The window's own corner, as the settings ask.
+pub fn window_radius() -> u8 {
+    window_radius_for(
+        corners(),
+        COMPOSITOR_CORNERS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
 
 /// The level in use, as a [`Corners`] discriminant. Global rather than on the [`Palette`]
 /// because corners are drawn in places that hold no palette (the art's own shape, the card
@@ -165,6 +190,11 @@ pub const ROW_LEFT_INSET: f32 = 8.0;
 pub const ROW_LEFT_INSET_TIGHT: f32 = 4.0;
 /// The gap between a queue row's cover and the top and bottom of its hover fill.
 pub const ROW_FILL_GAP_TIGHT: f32 = 6.0;
+/// The gap between a Home shelf row's cover and its hover fill, on every side: less than a
+/// list's 8pt so a grid of songs reads denser, and the same at the side as above and below.
+pub const SHELF_FILL_GAP: f32 = 5.0;
+/// A song row on a Home shelf: its cover with [`SHELF_FILL_GAP`] above and below.
+pub const SHELF_ROW_HEIGHT: f32 = ART_SIZE + 2.0 * SHELF_FILL_GAP;
 /// The width of a numbered list's rank column before the art. Zero on unnumbered rows.
 pub const ROW_NUMBER_W: f32 = 26.0;
 /// The gap between a number and the cover beside it — the padding that keeps the two from
@@ -311,10 +341,15 @@ pub const PAGE_INSET_X: f32 = 20.0;
 /// the loading skeleton, which would otherwise jump when the page arrives.
 pub const HEADER_TOP_PAD: f32 = PAGE_INSET_X;
 
-/// A rail row: cover, title, author.
-pub const RAIL_ROW_HEIGHT: f32 = 60.0;
-/// A row of the icon rail: just the cover, and a little air round it.
-pub const RAIL_ROW_HEIGHT_COMPACT: f32 = 52.0;
+/// The gap between a sidebar playlist's cover and its hover fill, on every side.
+pub const RAIL_FILL_GAP: f32 = 6.0;
+/// A rail row: cover, title, author, with [`RAIL_FILL_GAP`] above and below the cover.
+pub const RAIL_ROW_HEIGHT: f32 = RAIL_ART_SIZE + 2.0 * RAIL_FILL_GAP;
+/// A row of the icon rail: just the cover, with the same air on every side — a square as wide
+/// as the rail's content column.
+pub const RAIL_ROW_HEIGHT_COMPACT: f32 = 48.0;
+/// Cover size on an icon-rail row: 4pt short of the row at each edge.
+pub const RAIL_ART_SIZE_COMPACT: f32 = RAIL_ROW_HEIGHT_COMPACT - 2.0 * 4.0;
 /// Cover size on a rail row.
 pub const RAIL_ART_SIZE: f32 = 44.0;
 /// A sidebar nav row — Home, Search, Library.
@@ -853,6 +888,25 @@ mod tests {
         }
     }
 
+    /// The window's corner follows the level, or is left to the compositor.
+    #[test]
+    fn the_window_corner_follows_the_level_or_the_compositor() {
+        let level = |c| window_radius_for(c, false);
+        assert_eq!(
+            (
+                level(Corners::Round),
+                level(Corners::Soft),
+                level(Corners::Sharp)
+            ),
+            (20, 10, 4)
+        );
+        assert!(
+            Corners::ALL
+                .into_iter()
+                .all(|c| window_radius_for(c, true) == 0)
+        );
+    }
+
     /// A pill is fully round whatever the level: its ends are half its height.
     #[test]
     fn a_pill_is_round_at_every_level() {
@@ -1005,7 +1059,9 @@ mod tests {
             24.0,
             "the icon's offset in a full-width nav pill"
         );
-        const { assert!(RAIL_ROW_HEIGHT_COMPACT > RAIL_ART_SIZE) };
+        // The icon rail's row is square, so its fill leaves the cover the same air all round.
+        assert_eq!(RAIL_ROW_HEIGHT_COMPACT, content);
+        const { assert!(RAIL_ROW_HEIGHT_COMPACT > RAIL_ART_SIZE_COMPACT) };
     }
 
     /// The glass treatment is for a see-through window only: opaque, every control fill, text

@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, Ui, pos2, vec2};
 
-/// How large the cached image is, in pixels. Emoji are drawn at 13–15pt; 48px covers that on a 2×
+/// How large the cached image is, in pixels. Emoji are mostly drawn at 13–15pt; 48px covers that on a 2×
 /// display with room to spare, and costs 9 KB a glyph instead of the 70 KB the font's own 136×128
 /// strike would.
 const CACHE_PX: u32 = 48;
@@ -31,10 +31,20 @@ const CACHE_PX: u32 = 48;
 /// Emoji are drawn slightly larger than the nominal font size, as fonts draw them.
 const SIZE_FACTOR: f32 = 1.15;
 
+/// Inter's capitals, cap line to baseline, as a fraction of the size: 0.35 above the line's
+/// centre and 0.364 below it.
+const CAP_SPAN: f32 = 0.714;
+
+/// How much taller than the capitals an emoji may be, split over both ends. `SIZE_FACTOR`
+/// alone grows the overhang with the size: a 56pt title's emoji rose 13pt past its capitals,
+/// into the type line above it.
+const CAP_OVERHANG: f32 = 6.0;
+
 /// The side of an emoji image drawn at `font_size` — what the text measurer sizes an emoji
-/// written with VARIATION SELECTOR-16 to, so the two agree.
+/// written with VARIATION SELECTOR-16 to, so the two agree. Up to about 14pt that is
+/// `SIZE_FACTOR`; above it the capitals plus a fixed overhang.
 pub(crate) fn emoji_side(font_size: f32) -> f32 {
-    font_size * SIZE_FACTOR
+    (font_size * SIZE_FACTOR).min(font_size * CAP_SPAN + CAP_OVERHANG)
 }
 
 /// VARIATION SELECTOR-16: "draw the previous character as an emoji". It carries no glyph of its
@@ -169,7 +179,7 @@ fn paint_line_with(
                 let advance = crate::widgets::text_width(ui, source, font);
                 match texture(ui.ctx(), ch) {
                     Some(tex) => {
-                        let side = font.size * SIZE_FACTOR;
+                        let side = emoji_side(font.size);
                         let rect = Rect::from_center_size(
                             pos2(x + advance / 2.0, pos.y),
                             vec2(side, side),
@@ -395,6 +405,17 @@ fn fontconfig_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Text-sized emoji keep the font's usual size; a header title's stay within 3pt of its
+    /// capitals at either end, so they clear the type line above the name.
+    #[test]
+    fn a_title_emoji_stays_near_its_capitals() {
+        assert_eq!(emoji_side(13.0), 13.0 * SIZE_FACTOR);
+        for size in [26.0, 40.0, 56.0] {
+            let overhang = (emoji_side(size) - size * CAP_SPAN) / 2.0;
+            assert!(overhang <= 3.0 + f32::EPSILON, "{size}: {overhang}");
+        }
+    }
 
     #[test]
     fn a_plain_title_is_one_text_run() {

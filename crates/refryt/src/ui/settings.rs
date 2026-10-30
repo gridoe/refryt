@@ -346,6 +346,7 @@ fn appearance(app: &mut App, ui: &mut egui::Ui) {
     let mut blur = app.settings.blur;
     let mut card_outline = app.settings.card_outline;
     let mut corners = app.settings.corners;
+    let mut compositor_corners = app.settings.compositor_corners;
     let mut scroll_fades = app.settings.scroll_fades;
     widgets::setting_group(ui, &p, Some("Window"), |ui, g| {
         // A slider, not chips: transparency is a continuum, and four names only ever made
@@ -427,13 +428,33 @@ fn appearance(app: &mut App, ui: &mut egui::Ui) {
         g.row(
             ui,
             "Corners",
-            "How rounded panels, covers and buttons are.",
+            "How rounded the window, panels, menus and covers are.",
             |ui| {
                 for option in crate::theme::Corners::ALL.into_iter().rev() {
                     if widgets::chip(ui, &p, option.label(), corners == option).clicked() {
                         corners = option;
                     }
                 }
+            },
+        );
+        // Only Linux draws the window's corner itself; Windows and macOS round it as they do.
+        let linux = cfg!(target_os = "linux");
+        g.row(
+            ui,
+            "Compositor window corners",
+            if linux {
+                "Lets your compositor round the window, instead of Corners. Linux only."
+            } else {
+                "Linux only. Windows and macOS always use the system's corners."
+            },
+            |ui| {
+                widgets::toggle_enabled(
+                    ui,
+                    &p,
+                    ui.id().with("setting-compositor-corners"),
+                    &mut compositor_corners,
+                    linux,
+                );
             },
         );
         toggle_row(
@@ -466,6 +487,7 @@ fn appearance(app: &mut App, ui: &mut egui::Ui) {
         s.adaptive_art_color = adaptive_art_color;
         s.card_outline = card_outline;
         s.corners = corners;
+        s.compositor_corners = compositor_corners;
         s.scroll_fades = scroll_fades;
     });
 }
@@ -541,6 +563,7 @@ fn playback(app: &mut App, ui: &mut egui::Ui) {
 fn library(app: &mut App, ui: &mut egui::Ui) {
     let p = app.palette;
     let mut double_click = app.settings.double_click_to_play;
+    let mut title_album = app.settings.title_opens_album;
     let mut playlist_sort = app.settings.playlist_default_sort;
     let mut open_order = false;
 
@@ -553,6 +576,15 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             "Double-click to play",
             "One click selects, two clicks play.",
             &mut double_click,
+        );
+        toggle_row(
+            g,
+            ui,
+            &p,
+            "setting-title-album",
+            "Song titles open their album",
+            "Clicking a song's title in a list opens its album or single. Song cards and the player bar's title always do.",
+            &mut title_album,
         );
         g.wide_row(
             ui,
@@ -603,6 +635,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     app.update_settings(&ctx, |s| {
         s.double_click_to_play = double_click;
+        s.title_opens_album = title_album;
         s.playlist_default_sort = playlist_sort;
         s.home_strict_order = strict;
     });

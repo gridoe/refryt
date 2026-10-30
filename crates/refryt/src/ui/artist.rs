@@ -568,6 +568,7 @@ fn circle_header(app: &mut App, ui: &mut egui::Ui) {
                 meta: None,
                 owner: None,
                 credit_air: 4.0,
+                credit_pt: 13.0,
                 // Play, Mix, Shuffle, Subscribe and ••• are this page's own row below, not
                 // `page_header`'s Play/Save/•••.
                 play_size: None,

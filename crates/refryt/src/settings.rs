@@ -259,6 +259,9 @@ pub struct Settings {
     pub card_outline: bool,
     /// How round the corners are, everywhere.
     pub corners: crate::theme::Corners,
+    /// Linux: the window draws no corner of its own and leaves it to the compositor. Off, it
+    /// follows `corners`. Windows and macOS round the window themselves.
+    pub compositor_corners: bool,
     /// Fade a scrolled list out at an end with more of it past that end, in the cards (not the
     /// fullscreen player, which always fades). Off by default; it is worth most on a see-through
     /// window, where a list otherwise stops at a hard line over the desktop.
@@ -290,6 +293,9 @@ pub struct Settings {
     /// Spotify-style playback: a single click on a song selects it and only a double click
     /// plays it. On by default; off restores single-click-to-play everywhere.
     pub double_click_to_play: bool,
+    /// A song's title opens its album or single: in track rows the title is a link, and a song
+    /// card opens it. Off by default; the player bar's title opens it either way.
+    pub title_opens_album: bool,
     /// Report plays to the signed-in account's watch history. Anonymous listening never
     /// reports — there is no account to count on — so this only matters while signed in.
     pub scrobble: bool,
@@ -349,6 +355,7 @@ impl Default for Settings {
             blur: true,
             card_outline: true,
             corners: crate::theme::Corners::default(),
+            compositor_corners: false,
             scroll_fades: false,
             adaptive_art_color: true,
             quality: Quality::default(),
@@ -359,6 +366,7 @@ impl Default for Settings {
             home_strict_order: false,
             normalise_volume: false,
             double_click_to_play: true,
+            title_opens_album: false,
             scrobble: true,
             account_page_id: None,
             playlist_order: Vec::new(),
@@ -402,6 +410,8 @@ impl Settings {
         // Not part of the palette, but rebuilt with it: whatever repaints the palette (and
         // re-applies egui's style, whose widget corners read it) picks the level up.
         crate::theme::set_corners(self.corners);
+        crate::theme::set_compositor_corners(self.compositor_corners);
+        crate::widgets::set_title_opens_album(self.title_opens_album);
         let dark = self.theme.is_dark(ctx);
         match self.painting_theme(dark, themes) {
             Some(t) => t.palette(),
@@ -642,6 +652,21 @@ mod tests {
                 serde_json::from_slice(&serde_json::to_vec(&set).unwrap()).unwrap();
             assert_eq!(back.corners, corners);
         }
+    }
+
+    /// Both switches are off for anyone whose file predates them.
+    #[test]
+    fn new_switches_default_off() {
+        let old: Settings = serde_json::from_str(r#"{"opacity":0.5}"#).unwrap();
+        assert!(!old.compositor_corners);
+        assert!(!old.title_opens_album);
+        let set = Settings {
+            compositor_corners: true,
+            title_opens_album: true,
+            ..Settings::default()
+        };
+        let back: Settings = serde_json::from_slice(&serde_json::to_vec(&set).unwrap()).unwrap();
+        assert!(back.compositor_corners && back.title_opens_album);
     }
 
     /// Scroll fades are off for anyone whose file predates the setting, and a choice to turn them

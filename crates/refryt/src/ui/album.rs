@@ -20,7 +20,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
                 title: None,
                 description: false,
                 credit_line: true,
-                credit_air: 0.0,
+                credit_air: 5.6,
                 controls: crate::ui::HeaderControls::PlayOnly,
             },
         );
@@ -125,10 +125,12 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
                 second_plain: None,
                 meta: Some(&meta),
                 owner: None,
-                // No air beyond the header's own: the artist is the album's identity and
-                // belongs right under the name. The header measures from the title's painted
-                // ink, so a name with no descenders pulls it up close and a tail keeps it clear.
-                credit_air: 0.0,
+                // The artist sits midway between the name and the info line: 5.6 puts the
+                // same ~9 pt between the title's painted ink and the 15 pt capitals as between
+                // those and the 13 pt info line's. The header measures from the ink, so a name
+                // with no descenders pulls it up close and a tail keeps it clear.
+                credit_air: 5.6,
+                credit_pt: 15.0,
                 play_size: Some(crate::ui::DETAIL_PLAY_PT),
                 playing,
                 // No like id, no button: the page gave no play button, and a control that
@@ -236,6 +238,7 @@ fn meta_line(album: &Album) -> String {
 
 fn track_list(app: &mut App, ui: &mut egui::Ui) {
     let signed_in = app.signed_in();
+    land_on_focus(app, ui);
     let clicked = {
         let App {
             palette,
@@ -267,6 +270,9 @@ fn track_list(app: &mut App, ui: &mut egui::Ui) {
             true,
         )
     };
+    if clicked.click.is_some() || clicked.action.is_some() {
+        widgets::set_focused_row(ui.ctx(), None);
+    }
     match clicked.click {
         Some(ListClick::Row(i)) => {
             if let Some(tracks) = app.album.as_ref().map(|a| a.tracks.clone()) {
@@ -278,5 +284,91 @@ fn track_list(app: &mut App, ui: &mut egui::Ui) {
     }
     if let Some(action) = clicked.action {
         app.row_action(action);
+    }
+}
+
+/// Mark the song a card opened this album on, and bring its row into view: once, on the first
+/// frame the album is on screen. Called where the list is about to start, so its top is the
+/// cursor.
+fn land_on_focus(app: &App, ui: &mut egui::Ui) {
+    let Some(focus) = widgets::album_focus(ui.ctx()) else {
+        return;
+    };
+    let Some(album) = app.album.as_ref().filter(|a| a.id == focus.album_id) else {
+        return;
+    };
+    widgets::set_album_focus(ui.ctx(), None);
+    // A single is the song: there is nothing on its page to point out.
+    if album.kind.eq_ignore_ascii_case("single") || album.tracks.len() == 1 {
+        return;
+    }
+    let Some(i) = focus_index(&album.tracks, &focus) else {
+        return;
+    };
+    widgets::set_focused_row(ui.ctx(), Some(album.tracks[i].video_id.clone()));
+    let row_h = widgets::row_height(false, ui.available_width());
+    let pitch = crate::ui::row_pitch(row_h, ui.spacing().item_spacing.y);
+    let top = ui.cursor().top() + i as f32 * pitch;
+    let row = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=top + row_h);
+    ui.scroll_to_rect(row, Some(egui::Align::Center));
+}
+
+/// The album row a card's song is: the same video, or failing that the same title, since a
+/// card can carry a music video or another upload of the album's track.
+fn focus_index(tracks: &[crate::model::Track], focus: &widgets::AlbumFocus) -> Option<usize> {
+    tracks
+        .iter()
+        .position(|t| t.video_id == focus.video_id)
+        .or_else(|| {
+            let title = focus.title.trim().to_lowercase();
+            tracks
+                .iter()
+                .position(|t| t.title.trim().to_lowercase() == title)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::focus_index;
+    use crate::model::Track;
+    use crate::widgets::AlbumFocus;
+
+    fn track(id: &str, title: &str) -> Track {
+        Track {
+            video_id: id.to_owned(),
+            title: title.to_owned(),
+            artists: Vec::new(),
+            album: None,
+            album_id: None,
+            duration: None,
+            plays: None,
+            explicit: false,
+            like: crate::model::LikeStatus::Indifferent,
+            in_library: false,
+            library_add: None,
+            library_remove: None,
+            set_video_id: None,
+            thumbnail: None,
+            rank: None,
+            trend: crate::model::ChartTrend::Unknown,
+            wide: false,
+            local_path: None,
+        }
+    }
+
+    /// The card's own video is found first; a card carrying another upload of the song (a music
+    /// video) still lands on the album's track by its title, and a song not on the album marks
+    /// nothing.
+    #[test]
+    fn the_card_song_is_found_by_id_then_by_title() {
+        let tracks = [track("a", "Intro"), track("b", "Nova"), track("c", "Outro")];
+        let focus = |id: &str, title: &str| AlbumFocus {
+            album_id: "MPREb_x".to_owned(),
+            video_id: id.to_owned(),
+            title: title.to_owned(),
+        };
+        assert_eq!(focus_index(&tracks, &focus("c", "Nova")), Some(2));
+        assert_eq!(focus_index(&tracks, &focus("omv", " nova ")), Some(1));
+        assert_eq!(focus_index(&tracks, &focus("omv", "Elsewhere")), None);
     }
 }

@@ -28,7 +28,7 @@ use crate::theme::{self, Palette};
 pub fn paint_background(ui: &Ui, palette: &Palette, rounded: bool) {
     let rect = ui.ctx().content_rect();
     let radius = if rounded {
-        CornerRadius::same(theme::WINDOW_RADIUS)
+        CornerRadius::same(theme::window_radius())
     } else {
         CornerRadius::ZERO
     };
