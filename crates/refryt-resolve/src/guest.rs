@@ -68,6 +68,8 @@ pub struct GuestResolver {
     visitor: Mutex<Option<String>>,
     visitor_file: Option<PathBuf>,
     quality: Mutex<GuestQuality>,
+    /// Ask the stream for its first byte before handing it on; see [`Self::probe`].
+    probe: bool,
 }
 
 impl GuestResolver {
@@ -80,6 +82,7 @@ impl GuestResolver {
             visitor: Mutex::new(None),
             visitor_file: None,
             quality: Mutex::new(GuestQuality::default()),
+            probe: true,
         }
     }
 
@@ -95,8 +98,11 @@ impl GuestResolver {
         self
     }
 
+    /// Tests point the requests at a local server whose canned streams live on googlevideo, so
+    /// the first-byte check is off unless a test turns it back on.
     #[cfg(test)]
     fn with_base(mut self, base: &str) -> Self {
+        self.probe = false;
         base.clone_into(&mut self.base);
         self
     }
@@ -119,6 +125,26 @@ impl GuestResolver {
             && let Err(e) = std::fs::write(path, visitor)
         {
             tracing::debug!(error = %e, "guest: could not save the visitor");
+        }
+    }
+
+    /// Ask the stream for its first byte, as the proxy will ask for its ranges. The media server
+    /// now and then refuses a URL `player` has just handed out; found here, the chain still
+    /// falls through to yt-dlp, where found in mpv the song would simply fail. The connection it
+    /// opens is the one the proxy's first range then reuses, as for the `player` request.
+    async fn probe(&self, url: &Url) -> Result<()> {
+        let response = self
+            .http
+            .get(url.as_str())
+            .header("Range", "bytes=0-0")
+            .header("User-Agent", GUEST_USER_AGENT)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .context("the stream did not answer")?;
+        match response.status().as_u16() {
+            200 | 206 => Ok(()),
+            status => bail!("the stream answered {status}"),
         }
     }
 
@@ -187,7 +213,14 @@ impl StreamResolver for GuestResolver {
             );
         }
         let quality = self.quality.lock().map(|q| *q).unwrap_or_default();
-        pick(&response, quality).with_context(|| format!("no direct audio stream for {id}"))
+        let stream =
+            pick(&response, quality).with_context(|| format!("no direct audio stream for {id}"))?;
+        if self.probe {
+            self.probe(&stream.url)
+                .await
+                .with_context(|| format!("guest stream for {id}"))?;
+        }
+        Ok(stream)
     }
 }
 
@@ -423,13 +456,22 @@ mod tests {
     /// A minimal HTTP server answering each connection with the next canned body, recording
     /// the requests it saw.
     async fn fake_youtube(bodies: Vec<Value>) -> (String, std::sync::Arc<Mutex<Vec<String>>>) {
+        fake_server(|_| bodies.into_iter().map(|b| (200, b)).collect()).await
+    }
+
+    /// [`fake_youtube`] with a status per reply, the replies built from the server's own address
+    /// so a canned stream URL can point back at it.
+    async fn fake_server(
+        replies: impl FnOnce(&str) -> Vec<(u16, Value)>,
+    ) -> (String, std::sync::Arc<Mutex<Vec<String>>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
+        let replies = replies(&base);
         let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
         let log = std::sync::Arc::clone(&seen);
         tokio::spawn(async move {
-            for body in bodies {
+            for (code, body) in replies {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut request = Vec::new();
                 let mut buf = [0u8; 8192];
@@ -457,7 +499,7 @@ mod tests {
                     .push(String::from_utf8_lossy(&request).to_string());
                 let body = body.to_string();
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 socket.write_all(reply.as_bytes()).await.unwrap();
@@ -500,6 +542,38 @@ mod tests {
         let restarted = GuestResolver::new(reqwest::Client::new()).with_visitor_file(file.clone());
         assert_eq!(restarted.visitor().as_deref(), Some("ISSUED"));
         let _ = std::fs::remove_file(&file);
+    }
+
+    /// A stream the media server refuses is an error the chain falls through on; one that hands
+    /// out its first byte goes through, asked for as a range.
+    #[tokio::test]
+    async fn a_refused_stream_is_found_before_it_is_handed_on() {
+        for (code, plays) in [(403, false), (206, true)] {
+            let (base, seen) = fake_server(|base| {
+                let mut answer = response();
+                for f in answer["streamingData"]["adaptiveFormats"]
+                    .as_array_mut()
+                    .unwrap()
+                {
+                    if let Some(url) = f["url"].as_str() {
+                        f["url"] = json!(url.replace("https://rr1.googlevideo.com", base));
+                    }
+                }
+                vec![(200, answer), (code, json!({}))]
+            })
+            .await;
+            let mut guest = GuestResolver::new(reqwest::Client::new()).with_base(&base);
+            guest.probe = true;
+            let stream = guest.resolve(&VideoId::new("dQw4w9WgXcQ").unwrap()).await;
+            assert_eq!(stream.is_ok(), plays, "{code}: {stream:?}");
+            let requests = seen.lock().unwrap().clone();
+            assert!(
+                requests[1]
+                    .to_ascii_lowercase()
+                    .contains("range: bytes=0-0"),
+                "{code}"
+            );
+        }
     }
 
     /// Anything but OK is an error the chain can fall through on, worded so a gate stays the

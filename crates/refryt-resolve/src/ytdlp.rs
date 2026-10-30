@@ -141,6 +141,16 @@ fn netscape_cookies(header: &str) -> Option<String> {
     any.then_some(out)
 }
 
+/// Ask as the visionOS client, which hands out audio URLs without YouTube's JavaScript
+/// challenge, and skip the HLS and DASH manifests the audio formats do not need. yt-dlp's own
+/// default also asks the web clients, whose challenge it solves in a JavaScript runtime:
+/// measured 2026-10-30, that run took 3.6 s and 1.5 s of CPU against 2.4 s and 0.4 s, for the
+/// same Opus stream.
+const FAST_ARGS: [&str; 2] = [
+    "--extractor-args",
+    "youtube:player_client=visionos;skip=hls,dash",
+];
+
 pub struct YtDlpResolver {
     program: String,
     /// Extra arguments, e.g. a PO token provider or a cookies file.
@@ -286,9 +296,12 @@ impl YtDlpResolver {
     ///
     /// A Premium-only refusal also retries signed in, but is not remembered: it is about one
     /// song, and the next one still starts anonymously.
-    async fn run_gated(&self, id: &VideoId, format: &str) -> Result<YtDlpFormat> {
+    ///
+    /// With `fast`, the anonymous attempt asks as the visionOS client first (see [`FAST_ARGS`]);
+    /// only an answer that is neither a stream nor a gate goes on to the ordinary run.
+    async fn run_gated(&self, id: &VideoId, format: &str, fast: bool) -> Result<YtDlpFormat> {
         let signed_in = |cookies: CookieFile| async move {
-            self.run_json(id, &format!("{format}/best"), Some(&cookies))
+            self.run_json(id, &format!("{format}/best"), Some(&cookies), false)
                 .await
         };
         let cookies = || self.session.as_ref().and_then(CookieFile::for_session);
@@ -305,7 +318,15 @@ impl YtDlpResolver {
         {
             return signed_in(cookies).await;
         }
-        let anonymous = self.run_json(id, format, None).await;
+        let mut anonymous = self.run_json(id, format, None, fast).await;
+        if fast
+            && let Err(e) = &anonymous
+            && !is_premium_gate(e)
+            && !is_sign_in_gate(e)
+        {
+            tracing::info!(video_id = %id, error = %format!("{e:#}"), "yt-dlp: visionOS run failed; trying the full run");
+            anonymous = self.run_json(id, format, None, false).await;
+        }
         let Err(refusal) = &anonymous else {
             return anonymous;
         };
@@ -352,18 +373,22 @@ impl YtDlpResolver {
         }
     }
 
-    /// Ask yt-dlp for one format and parse its `-j` output.
+    /// Ask yt-dlp for one format and parse its `-j` output, with [`FAST_ARGS`] when `fast`.
     async fn run_json(
         &self,
         id: &VideoId,
         format: &str,
         cookies: Option<&CookieFile>,
+        fast: bool,
     ) -> Result<YtDlpFormat> {
         // Held until the process is done; see `MAX_CONCURRENT_RUNS`.
         let _permit = ytdlp_permit().await;
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.args(["-j", "--no-warnings", "--no-playlist", "-f", format])
             .args(&self.extra_args);
+        if fast {
+            cmd.args(FAST_ARGS);
+        }
         if let Some(file) = cookies {
             cmd.arg("--cookies").arg(file.path());
         }
@@ -399,7 +424,7 @@ impl StreamResolver for YtDlpResolver {
             .lock()
             .map(|f| f.clone())
             .unwrap_or_else(|_| DEFAULT_FORMAT.to_owned());
-        let parsed = self.run_gated(id, &format).await?;
+        let parsed = self.run_gated(id, &format, true).await?;
 
         if parsed.url.is_empty() {
             bail!("yt-dlp returned no URL for {id}");
@@ -485,7 +510,8 @@ impl VideoResolver for YtDlpResolver {
     }
 
     async fn resolve_video(&self, id: &VideoId) -> Result<VideoStream> {
-        let parsed = self.run_gated(id, VIDEO_FORMAT).await?;
+        // The view's H.264 renditions come from the web clients, so no visionOS run here.
+        let parsed = self.run_gated(id, VIDEO_FORMAT, false).await?;
         video_stream_from(&parsed, id)
     }
 }
@@ -692,6 +718,77 @@ pub(crate) mod tests {
             "install could not place the stub yt-dlp"
         );
         (script.to_string_lossy().into_owned(), log)
+    }
+
+    /// A stub yt-dlp whose visionOS run answers with `fast_error` (or a stream, when `None`) and
+    /// whose ordinary run always answers, recording "fast" or "full" in `log` for each run.
+    #[cfg(unix)]
+    fn fallback_stub(
+        dir: &std::path::Path,
+        fast_error: Option<&str>,
+    ) -> (String, std::path::PathBuf) {
+        let log = dir.join("runs");
+        let script = dir.join("yt-dlp");
+        let staged = dir.join("yt-dlp.sh");
+        let stream = r#"{"url":"https://example.com/a","acodec":"opus","format_id":"251"}"#;
+        let fast = match fast_error {
+            Some(e) => format!("echo '{e}' >&2; exit 1"),
+            None => format!("echo '{stream}'"),
+        };
+        std::fs::write(
+            &staged,
+            format!(
+                "#!/bin/sh\n\
+                 case \"$*\" in\n\
+                 *player_client=visionos*) echo fast >> '{log}'; {fast} ;;\n\
+                 *) echo full >> '{log}'; echo '{stream}' ;;\n\
+                 esac\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        let installed = std::process::Command::new("install")
+            .args(["-m", "755"])
+            .arg(&staged)
+            .arg(&script)
+            .status()
+            .unwrap();
+        assert!(
+            installed.success(),
+            "install could not place the stub yt-dlp"
+        );
+        (script.to_string_lossy().into_owned(), log)
+    }
+
+    /// The audio resolve asks as visionOS first; the full run follows only when that fails for
+    /// a reason other than a gate, and a gate goes straight to the gate's own handling.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_visionos_run_comes_first_and_the_full_run_only_after_it_fails() {
+        let cases: [(&str, Option<&str>, &[&str], bool); 3] = [
+            ("ok", None, &["fast"], true),
+            (
+                "broken",
+                Some("ERROR: [youtube] x: Requested format is not available"),
+                &["fast", "full"],
+                true,
+            ),
+            ("gated", Some(BOT_CHECK), &["fast"], false),
+        ];
+        for (name, fast_error, want, plays) in cases {
+            let dir =
+                std::env::temp_dir().join(format!("refryt-fast-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let (program, log) = fallback_stub(&dir, fast_error);
+            let resolver = YtDlpResolver::new().with_program(program);
+            let stream = resolver
+                .resolve(&VideoId::new("dQw4w9WgXcQ").unwrap())
+                .await;
+            let runs = std::fs::read_to_string(&log).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            assert_eq!(runs.lines().collect::<Vec<_>>(), want, "{name}");
+            assert_eq!(stream.is_ok(), plays, "{name}: {stream:?}");
+        }
     }
 
     /// Once refused, the next track skips the anonymous attempt: one yt-dlp run, not two.
