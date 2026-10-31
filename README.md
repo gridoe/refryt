@@ -1,10 +1,9 @@
 <p align="center">
-  <img src="assets/icons/app/refryt-256.png" width="96" alt="refryt icon">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/hero-dark.webp">
+    <img src="assets/hero-light.webp" alt="refryt, a native YouTube Music client: the home page with the queue and lyrics open, surrounded by album, artist, explore and library pages in different themes">
+  </picture>
 </p>
-
-<h1 align="center">refryt</h1>
-
-<p align="center">A native YouTube Music client for Linux, Windows and macOS.</p>
 
 <p align="center">
   <a href="https://github.com/gridoe/refryt/releases/latest"><img src="https://img.shields.io/github/v/release/gridoe/refryt" alt="Latest release"></a>
@@ -12,42 +11,72 @@
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows%20%7C%20macOS-lightgrey" alt="Platforms: Linux, Windows, macOS">
 </p>
 
-<p align="center">
-  <a href="assets/screenshots/home-classic.png"><img src="assets/screenshots/home-classic.png" width="49%" alt="Home in the classic dark theme"></a>
-  <a href="assets/screenshots/home-catppuccin-frappe-blur.png"><img src="assets/screenshots/home-catppuccin-frappe-blur.png" width="49%" alt="Home with the queue and lyrics open, in the Catppuccin Frappe scheme at 100% transparency on Wayland"></a>
-</p>
-
 <details>
-<summary>More screenshots</summary>
-
+<summary>The banner in the other theme</summary>
 <p align="center">
-  <a href="assets/screenshots/macos-home-classic-blur.png"><img src="assets/screenshots/macos-home-classic-blur.png" width="49%" alt="Home on macOS in the classic dark theme at full transparency with background blur"></a>
-  <a href="assets/screenshots/macos-fullscreen-player.png"><img src="assets/screenshots/macos-fullscreen-player.png" width="49%" alt="The fullscreen player on macOS with synced lyrics, transparent with background blur"></a>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/hero-light.webp">
+    <img src="assets/hero-dark.webp" alt="The refryt banner in its other colour scheme">
+  </picture>
 </p>
-
-<p align="center">
-  <a href="assets/screenshots/album.png"><img src="assets/screenshots/album.png" width="49%" alt="An album page with its header tinted from the cover"></a>
-  <a href="assets/screenshots/artist.png"><img src="assets/screenshots/artist.png" width="49%" alt="An artist page with its banner and top songs, and the queue open"></a>
-</p>
-
-<p align="center">
-  <a href="assets/screenshots/fullscreen-lyrics.png"><img src="assets/screenshots/fullscreen-lyrics.png" width="49%" alt="The fullscreen player with synced lyrics"></a>
-  <a href="assets/screenshots/spotify-theme.png"><img src="assets/screenshots/spotify-theme.png" width="49%" alt="Search results and the queue in the Spotify theme"></a>
-</p>
-
-<p align="center">
-  <a href="assets/screenshots/icon-rail-and-queue.png"><img src="assets/screenshots/icon-rail-and-queue.png" width="49%" alt="Explore with the sidebar folded to the icon rail and the queue open"></a>
-  <a href="assets/screenshots/settings.png"><img src="assets/screenshots/settings.png" width="49%" alt="Settings, Appearance"></a>
-</p>
-
 </details>
 
-refryt is a desktop client for YouTube Music written in Rust. There is no browser engine behind it. Playback goes through mpv, and the app talks to YouTube through the same internal API the website uses.
+refryt is a desktop client for YouTube Music, written in Rust. It doesn't embed a browser. Playback goes through mpv, and the app talks to YouTube through the same internal API the website uses.
 
 - Home, Explore, search, a library, synced lyrics, an editable queue and music videos.
 - 23 themes, with optional window transparency and background blur.
 - Memory use is typically between 100 and 300 MB, depending on the session.
 - Packages for Linux (AppImage and Flatpak), Windows (installer, MSI and zip, plus an ARM64 build) and macOS (Apple Silicon DMG).
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><a href="assets/screenshots/home-catppuccin-frappe-blur.webp"><img src="assets/screenshots/home-catppuccin-frappe-blur.webp" alt="Home with the queue and synced lyrics open, in Catppuccin Frappé, transparent with background blur"></a><br><sub>Home with the queue and lyrics, Catppuccin Frappé, transparent with blur*</sub></td>
+    <td width="50%"><a href="assets/screenshots/home-catppuccin-latte-blur.webp"><img src="assets/screenshots/home-catppuccin-latte-blur.webp" alt="Home with the queue open, in Catppuccin Latte, transparent with background blur"></a><br><sub>Home and the queue, Catppuccin Latte, transparent with blur*</sub></td>
+  </tr>
+</table>
+
+<details>
+<summary>More screenshots</summary>
+<br>
+<table>
+  <tr>
+    <td width="50%"><a href="assets/screenshots/home-classic.png"><img src="assets/screenshots/home-classic.png" alt="Home with the queue open, in the classic dark theme"></a><br><sub>Home and the queue, Classic Dark</sub></td>
+    <td width="50%"><a href="assets/screenshots/home-classic-light.webp"><img src="assets/screenshots/home-classic-light.webp" alt="Home in the classic light theme"></a><br><sub>Home, Classic Light</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="assets/screenshots/album.png"><img src="assets/screenshots/album.png" alt="The Starboy album page, its header tinted from the cover, in Tokyo Night"></a><br><sub>An album, Tokyo Night</sub></td>
+    <td width="50%"><a href="assets/screenshots/album-rose-pine-dawn.webp"><img src="assets/screenshots/album-rose-pine-dawn.webp" alt="An album page in Rosé Pine Dawn"></a><br><sub>An album, Rosé Pine Dawn</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="assets/screenshots/artist.webp"><img src="assets/screenshots/artist.webp" alt="An artist page with its banner and top songs, and the queue open, in Rosé Pine"></a><br><sub>An artist and the queue, Rosé Pine</sub></td>
+    <td width="50%"><a href="assets/screenshots/autoplay-filter.webp"><img src="assets/screenshots/autoplay-filter.webp" alt="An artist page with the queue's Autoplay filter open, in Tokyo Night Day"></a><br><sub>The Autoplay filter in the queue, Tokyo Night Day</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="assets/screenshots/explore-catppuccin-mocha.webp"><img src="assets/screenshots/explore-catppuccin-mocha.webp" alt="Explore with the queue and lyrics open, in Catppuccin Mocha"></a><br><sub>Explore with the queue and lyrics, Catppuccin Mocha</sub></td>
+    <td width="50%"><a href="assets/screenshots/explore-gruvbox-light.webp"><img src="assets/screenshots/explore-gruvbox-light.webp" alt="Explore with the queue and lyrics open, in Gruvbox Light"></a><br><sub>Explore with the queue and lyrics, Gruvbox Light</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="assets/screenshots/icon-rail.webp"><img src="assets/screenshots/icon-rail.webp" alt="Explore with the sidebar folded down to the icon rail, in Nord Polar Night"></a><br><sub>The sidebar folded to the icon rail, Nord Polar Night</sub></td>
+    <td width="50%"><a href="assets/screenshots/library-everforest-light.webp"><img src="assets/screenshots/library-everforest-light.webp" alt="The library with the queue open, in Everforest Light"></a><br><sub>The library and the queue, Everforest Light</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="assets/screenshots/spotify-theme.png"><img src="assets/screenshots/spotify-theme.png" alt="Search results and the queue in the Spotify theme"></a><br><sub>Search and the queue, Spotify</sub></td>
+    <td width="50%"><a href="assets/screenshots/home-solarized-light.webp"><img src="assets/screenshots/home-solarized-light.webp" alt="Home in Solarized Light"></a><br><sub>Home, Solarized Light</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="assets/screenshots/fullscreen-lyrics.png"><img src="assets/screenshots/fullscreen-lyrics.png" alt="The fullscreen player with synced lyrics"></a><br><sub>The fullscreen player with synced lyrics</sub></td>
+    <td width="50%"><a href="assets/screenshots/settings.png"><img src="assets/screenshots/settings.png" alt="Settings, Appearance, in Catppuccin Frappé, transparent with background blur"></a><br><sub>Settings, Catppuccin Frappé, transparent with blur*</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="assets/screenshots/macos-home-classic-blur.png"><img src="assets/screenshots/macos-home-classic-blur.png" alt="Home on macOS in the classic dark theme at full transparency with background blur"></a><br><sub>macOS: Home, Classic Dark, transparent with blur</sub></td>
+    <td width="50%"><a href="assets/screenshots/macos-fullscreen-player.png"><img src="assets/screenshots/macos-fullscreen-player.png" alt="The fullscreen player on macOS with synced lyrics, transparent with background blur"></a><br><sub>macOS: the fullscreen player</sub></td>
+  </tr>
+</table>
+</details>
+
+<sub>* On Linux the blur comes from the compositor, which the app's own screenshot can't capture, so it was added afterwards over a blurred wallpaper. The transparency is the app's.</sub>
 
 ## Install
 
