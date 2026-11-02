@@ -12,8 +12,11 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Space", "Play / pause"),
     ("↑ / ↓", "Previous / next track"),
     ("M", "Mute"),
-    ("F", "Fullscreen player"),
-    ("Esc", "Leave fullscreen player"),
+    ("F", "Now-playing view"),
+    ("F11", "Now-playing view, fullscreen"),
+    #[cfg(target_os = "macos")]
+    ("⌃⌘F", "Fullscreen on or off"),
+    ("Esc", "Close now-playing view"),
     ("⌘/Ctrl + S", "Shuffle"),
     ("⌘/Ctrl + R", "Repeat"),
     ("⌘/Ctrl + K", "Focus search"),

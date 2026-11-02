@@ -142,7 +142,7 @@ To build from source, see [Build from source](#build-from-source).
 - Playlists you can create, rename and reorder by dragging, with YouTube's suggestions on your own.
 - Liked songs marked everywhere, and a tile on each artist page with the ones you liked.
 - Home's sections in the order you choose.
-- A fullscreen player with the cover, synced lyrics and a queue drawer (F to open, Esc to close).
+- A now-playing view with the cover, synced lyrics and a queue drawer (F to open, F11 to open it fullscreen, Esc to close).
 - Local folders, browsable like a file tree, and any folder as a playlist.
 - Downloads with Premium, to `~/Music/refryt` with tags and cover art, and an offline mode that points to them.
 - Audio quality, volume normalisation and autoplay when the queue runs out.
@@ -160,8 +160,9 @@ To build from source, see [Build from source](#build-from-source).
 | Up / Down | Previous / next song |
 | Ctrl + Up / Down | Volume up / down |
 | M | Mute |
-| F | Open or close the fullscreen player |
-| Esc | Close the queue drawer, then the fullscreen player |
+| F | Open or close the now-playing view |
+| F11 | Open the now-playing view in fullscreen; in it, fullscreen on or off |
+| Esc | Close the now-playing view |
 | Ctrl + S | Shuffle |
 | Ctrl + R | Cycle repeat mode |
 | Ctrl + K or Ctrl + L | Jump to search |
