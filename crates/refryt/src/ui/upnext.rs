@@ -40,7 +40,11 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
         // The list runs to the card's top edge now; this is the header's own breathing room,
         // and it scrolls away with it — the same distance the content has from the sides.
         ui.add_space(8.0);
-        now_playing(app, ui);
+        // The now-playing view may show the song at the drawer's head already (its cover, when
+        // there is no room beside the lyrics); a row saying it again under it would be noise.
+        if !(app.fs.open && app.fs.cover_in_drawer) {
+            now_playing(app, ui);
+        }
         // The listener's own songs still to come, then the radio after them under its own
         // "Autoplay" header, as the site splits them. With none of theirs left — a mix, a song's
         // radio, a playlist played out — the radio is simply what's next up.

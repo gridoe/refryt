@@ -281,6 +281,12 @@ pub struct Settings {
     /// Whether the fullscreen player shows the lyrics beside the cover. On by default; the
     /// Lyrics button in that view changes it, and a song with no lyrics never does.
     pub fullscreen_lyrics: bool,
+    /// Whether the now-playing view shows the queue. On by default; the Queue button in that
+    /// view changes it.
+    pub fullscreen_queue: bool,
+    /// Whether the queue was turned on after the lyrics, so it is the one in front where the
+    /// view has room for only one. Off by default: the lyrics come first.
+    pub fullscreen_queue_front: bool,
     /// The order of Home's sections, as [`crate::model::HomeSection::key`]s. Read through
     /// [`crate::model::normalise_order`], which makes any saved list complete.
     pub home_order: Vec<String>,
@@ -362,6 +368,8 @@ impl Default for Settings {
             autoplay: true,
             queue_click_keeps_order: false,
             fullscreen_lyrics: true,
+            fullscreen_queue: true,
+            fullscreen_queue_front: false,
             home_order: crate::model::default_order_keys(),
             home_strict_order: false,
             normalise_volume: false,

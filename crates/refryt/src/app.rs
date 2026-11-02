@@ -2184,6 +2184,7 @@ impl App {
                 // drawer out, which nothing outside the app can click open.
                 let mut fs = ui::fullscreen::State::opened(lyrics || settings.fullscreen_lyrics);
                 fs.queue = queue;
+                fs.queue_last = queue;
                 fs
             } else {
                 ui::fullscreen::State::default()
@@ -2369,8 +2370,9 @@ impl App {
             self.toggle_mute();
         }
         // ⌘M and ⌘W are the Window menu's on macOS (`menu_bar`), as in every Mac app.
-        // The fullscreen view: F opens and closes it, Escape closes the queue drawer and then
-        // the view.
+        // The now-playing view: F opens and closes it, and Escape closes it. F11 opens it
+        // fullscreen, and in it takes the window in and out of fullscreen. macOS has ⌃⌘F in the
+        // menu bar for the window's fullscreen.
         if ctx.input(|i| i.modifiers.is_none() && i.key_pressed(egui::Key::F)) {
             if self.fs.open {
                 self.fs_exit(ctx);
@@ -2378,12 +2380,12 @@ impl App {
                 self.fs_enter(ctx);
             }
         }
+        if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
+            self.fullscreen_key(ctx);
+        }
         if self.fs.open && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            if self.fs.queue {
-                self.fs.queue = false;
-            } else {
-                self.fs_exit(ctx);
-            }
+            // The queue is part of how the view was left, so Esc closes the view, queue and all.
+            self.fs_exit(ctx);
         }
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
             self.toggle_shuffle();
@@ -2691,6 +2693,7 @@ impl App {
                         self.fs_enter(ctx);
                     }
                 }
+                Command::WindowFullscreen => self.toggle_window_fullscreen(ctx),
                 Command::Settings => self.navigate(Route::Settings),
                 Command::Shortcuts => self.help_open = true,
                 Command::Website => crate::open_url(crate::menu_bar::WEBSITE),
@@ -2709,6 +2712,7 @@ impl App {
             queue_open: self.upnext_open,
             lyrics_open: self.lyrics_open,
             fullscreen_player: self.fs.open,
+            window_fullscreen: crate::window_fullscreen::is(ctx),
             signed_in: self.signed_in(),
             typing: ctx.memory(|m| m.focused().is_some()),
         };
@@ -6526,18 +6530,75 @@ impl App {
         }
     }
 
-    /// Open the fullscreen now-playing view and take the window fullscreen with it. Does
-    /// nothing with no song loaded: there is nothing to show.
+    /// Open the now-playing view in the window as it is; F11 inside it takes the window
+    /// fullscreen. Does nothing with no song loaded: there is nothing to show.
     pub(crate) fn fs_enter(&mut self, ctx: &egui::Context) {
         if self.now.track.is_none() || self.fs.open {
             return;
         }
         let was_fullscreen = crate::window_fullscreen::is(ctx);
         tracing::debug!(was_fullscreen, "fullscreen view: entering");
-        self.fs = ui::fullscreen::State::entering(self.settings.fullscreen_lyrics, was_fullscreen);
-        if !self.fs.window_was_fullscreen {
-            crate::window_fullscreen::set(ctx, true);
+        let s = &self.settings;
+        self.fs = ui::fullscreen::State::entering(
+            s.fullscreen_lyrics,
+            s.fullscreen_queue,
+            s.fullscreen_queue_front,
+            was_fullscreen,
+        );
+    }
+
+    /// The window in or out of fullscreen (⌃⌘F on macOS, F11 with no song). In the now-playing
+    /// view, through the view's own toggle, so it knows who leaves fullscreen.
+    pub(crate) fn toggle_window_fullscreen(&mut self, ctx: &egui::Context) {
+        if self.fs.open {
+            self.fs_toggle_window(ctx);
+        } else {
+            let on = !crate::window_fullscreen::is(ctx);
+            tracing::debug!(on, "window fullscreen");
+            crate::window_fullscreen::set(ctx, on);
         }
+    }
+
+    /// F11: the now-playing view fullscreen, as the fullscreen player was. From the rest of the
+    /// app it opens the view and takes the window fullscreen, and pressed again goes back. In a
+    /// view opened with F it switches fullscreen and the view stays. With no song there is no
+    /// view, and the window alone goes fullscreen.
+    fn fullscreen_key(&mut self, ctx: &egui::Context) {
+        if self.fs.open && self.fs.from_key {
+            self.fs_exit(ctx);
+            return;
+        }
+        if !self.fs.open && self.now.track.is_some() {
+            self.fs_enter(ctx);
+            if !crate::window_fullscreen::is(ctx) {
+                self.fs_toggle_window(ctx);
+                self.fs.from_key = true;
+            }
+            return;
+        }
+        self.toggle_window_fullscreen(ctx);
+    }
+
+    /// Save what the now-playing view shows, so it opens the same way next time.
+    pub(crate) fn fs_save_choice(&mut self, ctx: &egui::Context) {
+        let (lyrics, queue, front) = (self.fs.lyrics, self.fs.queue, self.fs.queue_last);
+        self.update_settings(ctx, |s| {
+            s.fullscreen_lyrics = lyrics;
+            s.fullscreen_queue = queue;
+            s.fullscreen_queue_front = front;
+        });
+    }
+
+    /// Take the window into or out of fullscreen from inside the now-playing view (F11, or the
+    /// view's own button), keeping the view open either way.
+    pub(crate) fn fs_toggle_window(&mut self, ctx: &egui::Context) {
+        if !self.fs.open {
+            return;
+        }
+        let on = !crate::window_fullscreen::is(ctx);
+        tracing::debug!(on, "fullscreen view: toggling the window");
+        crate::window_fullscreen::set(ctx, on);
+        self.fs.window_toggled(on);
     }
 
     /// Close the fullscreen view, and leave window fullscreen unless something else had it on
@@ -7991,9 +8052,11 @@ impl eframe::App for App {
 
         self.leave_restored_fullscreen(&ctx);
         // A fullscreen window is as square as a maximised one: nothing of the shell's own edge
-        // shows, and there is nothing to resize.
+        // shows, and there is nothing to resize. The now-playing view counts from the moment it
+        // asks for fullscreen, before the window answers; one kept in the window does not.
         let fullscreen = crate::window_fullscreen::is(&ctx);
-        let maximized = Self::is_maximized(&ctx) || fullscreen || self.fs.open;
+        let player_fullscreen = self.fs.open && self.fs.manages_window;
+        let maximized = Self::is_maximized(&ctx) || fullscreen || player_fullscreen;
         // Windows and macOS never paint their own corners: the system rounds the window and
         // clips the shadow (and the blur) to that shape, so a second, app-drawn radius on top
         // would only disagree with it. On Windows that is DWM's corner preference, asked for in
@@ -8004,7 +8067,7 @@ impl eframe::App for App {
             && !cfg!(target_os = "windows")
             && !cfg!(target_os = "macos");
         let p = self.palette;
-        self.place_traffic_lights(fullscreen || self.fs.open);
+        self.place_traffic_lights(fullscreen || player_fullscreen);
 
         chrome::paint_background(ui, &p, rounded);
 
@@ -8052,8 +8115,9 @@ impl eframe::App for App {
             return;
         }
 
-        // The fullscreen view is closed from outside it too: the window leaving fullscreen
-        // (F11, the compositor) or the song going away.
+        // The window leaving fullscreen from outside the view (the compositor, a shortcut of
+        // its own) leaves the view open in the window, with nothing left for it to undo. The
+        // song going away closes it.
         if self.fs.open {
             if self.fs.manages_window {
                 if Instant::now() < self.fs.grace_until {
@@ -8061,8 +8125,8 @@ impl eframe::App for App {
                     ctx.request_repaint_after(Duration::from_millis(200));
                 } else if !crate::window_fullscreen::is(&ctx) {
                     tracing::debug!("fullscreen view: the window left fullscreen");
-                    self.fs.open = false;
-                    self.fs.queue = false;
+                    self.fs.manages_window = false;
+                    self.fs.from_key = false;
                 }
             }
             if self.now.track.is_none() {

@@ -37,6 +37,13 @@ const EASE_RATE: f32 = 6.0;
 const BROWSE_FOR: Duration = Duration::from_secs(3);
 /// The window size the fixed numbers below were drawn for, by its shorter side.
 const REFERENCE: f32 = 1080.0;
+/// The shorter side of the card that still holds the view at full size when it is kept in the
+/// window; a smaller one scales it down.
+const WINDOWED_FIT: f32 = 640.0;
+/// The toggles' icon size in the title strip of a view kept in the window: a touch over the
+/// window buttons' own, as they are the view's controls and the strip's two groups still read
+/// as one row.
+const STRIP_ICON: f32 = 16.0;
 
 /// Every size in the view, already multiplied by how big the window is.
 #[derive(Clone, Copy, Debug)]
@@ -59,8 +66,6 @@ pub(crate) struct Metrics {
     pub icon: f32,
     pub play: f32,
     pub controls_w: f32,
-    pub drawer_w: f32,
-    pub drawer_gap: f32,
     /// Under this width the lyrics take the whole screen and the cover steps aside.
     pub narrow: f32,
 }
@@ -68,7 +73,18 @@ pub(crate) struct Metrics {
 impl Metrics {
     pub fn new(screen: Rect) -> Self {
         let shorter = screen.width().min(screen.height());
-        let s = (shorter / REFERENCE).clamp(0.6, 1.4);
+        Self::scaled(screen, (shorter / REFERENCE).clamp(0.6, 1.4))
+    }
+
+    /// Kept in the window, the view is drawn at the size it has fullscreen on this monitor, so
+    /// the two look alike, and only scaled down where the window is too small to hold it.
+    pub fn in_window(card: Rect, monitor: Option<egui::Vec2>) -> Self {
+        let full = monitor.map_or(REFERENCE, |m| m.x.min(m.y));
+        let fits = card.width().min(card.height()) / WINDOWED_FIT;
+        Self::scaled(card, (full / REFERENCE).min(fits).clamp(0.6, 1.4))
+    }
+
+    fn scaled(screen: Rect, s: f32) -> Self {
         Self {
             scale: s,
             portrait: screen.height() > screen.width(),
@@ -80,13 +96,11 @@ impl Metrics {
             credits: 17.0 * s,
             lyrics: 32.0 * s,
             line_gap: 26.0 * s,
-            lyrics_max_w: 820.0 * s,
+            lyrics_max_w: 640.0 * s,
             column_gap: 80.0 * s,
             icon: 18.0 * s,
             play: 60.0 * s,
             controls_w: 760.0 * s,
-            drawer_w: (screen.width() * 0.24).clamp(340.0 * s, 460.0 * s),
-            drawer_gap: 48.0 * s,
             narrow: 640.0 * s,
         }
     }
@@ -100,6 +114,16 @@ pub struct State {
     /// touching this.
     pub lyrics: bool,
     pub queue: bool,
+    /// The queue was turned on after the lyrics, so where only one of them fits, it is the one
+    /// shown ([`State::shown`]).
+    pub queue_last: bool,
+    /// Opened straight into fullscreen by F11, so F11 again goes back to the app rather than
+    /// to the view in the window. Cleared once the window leaves fullscreen any other way.
+    pub from_key: bool,
+    /// The layout this frame holds only one of lyrics and queue: a vertical screen, where the
+    /// queue is a sheet in the lyrics' place, or one too narrow for them side by side. Written by
+    /// [`view`].
+    pub exclusive: bool,
     last_motion: Instant,
     /// Whether this view asked the window for fullscreen, and so owns leaving it. A test run
     /// opens the view without touching the window.
@@ -121,6 +145,10 @@ pub struct State {
     /// heights change, so the offset is snapped to the active line rather than left pointing at
     /// where it used to be.
     wrap_width: f32,
+    /// The cover and the song's name are drawn right above the queue this frame (at the head of
+    /// its column, or over the sheet on a vertical screen); the queue then leaves out its own
+    /// "Now playing" row, which would only say the same again.
+    pub cover_in_drawer: bool,
     /// The queue list's scroll offset, content height and viewport height as of its last draw,
     /// written by `upnext::panel`.
     pub queue_scroll: (f32, f32, f32),
@@ -136,6 +164,9 @@ impl Default for State {
             open: false,
             lyrics: false,
             queue: false,
+            queue_last: false,
+            from_key: false,
+            exclusive: false,
             last_motion: now,
             manages_window: false,
             window_was_fullscreen: false,
@@ -145,6 +176,7 @@ impl Default for State {
             manual_at: now,
             scroll_key: None,
             wrap_width: 0.0,
+            cover_in_drawer: false,
             queue_scroll: (0.0, 0.0, 0.0),
             lyrics_since: None,
         }
@@ -161,16 +193,69 @@ impl State {
         }
     }
 
-    /// Open for real: the window was taken fullscreen for it (or already was), and `lyrics` says
-    /// whether the lyrics column starts showing.
-    pub fn entering(lyrics: bool, window_was_fullscreen: bool) -> Self {
+    /// Open for real, in the window as it is, as the listener last left it: `lyrics` and `queue`
+    /// say what starts showing, and `queue_front` which of them is in front where only one fits.
+    /// Fullscreen is the listener's to ask for from inside the view (F11), so the view owns
+    /// nothing about the window yet, even one already fullscreen (the video view's own).
+    pub fn entering(
+        lyrics: bool,
+        queue: bool,
+        queue_front: bool,
+        window_was_fullscreen: bool,
+    ) -> Self {
         Self {
             open: true,
             lyrics,
-            manages_window: true,
+            queue,
+            queue_last: queue_front,
             window_was_fullscreen,
-            grace_until: Instant::now() + Duration::from_millis(2000),
             ..Self::default()
+        }
+    }
+
+    /// The window has just been taken fullscreen (`on`) or out of it from inside the view. Going
+    /// in, the view owns leaving again, and gets the same wait for the window to answer as on
+    /// opening; coming out, nothing is left for it to undo.
+    pub fn window_toggled(&mut self, on: bool) {
+        self.manages_window = on;
+        if !on {
+            self.from_key = false;
+        }
+        self.window_was_fullscreen = false;
+        self.grace_until = Instant::now() + Duration::from_millis(2000);
+    }
+
+    /// What is on screen of what the listener asked for, as `(lyrics, queue)`. Where the layout
+    /// holds only one, it is the one turned on last; elsewhere both. Neither choice is dropped
+    /// for it: widen the window and both are back, and a button only lights for what shows.
+    /// `lyrics_available` is false for a song with no lyrics.
+    pub fn shown(&self, lyrics_available: bool) -> (bool, bool) {
+        let lyrics = self.lyrics && lyrics_available;
+        if self.exclusive && lyrics && self.queue {
+            return (!self.queue_last, self.queue_last);
+        }
+        (lyrics, self.queue)
+    }
+
+    /// The Queue button: hides a queue that shows, and otherwise brings it on, in front of the
+    /// lyrics where only one fits.
+    pub fn press_queue(&mut self, lyrics_available: bool) {
+        if self.shown(lyrics_available).1 {
+            self.queue = false;
+        } else {
+            self.queue = true;
+            self.queue_last = true;
+        }
+    }
+
+    /// The Lyrics button, the same way round. The new choice is in `lyrics`, for the caller to
+    /// save.
+    pub fn press_lyrics(&mut self, lyrics_available: bool) {
+        if self.shown(lyrics_available).0 {
+            self.lyrics = false;
+        } else {
+            self.lyrics = true;
+            self.queue_last = false;
         }
     }
 
@@ -214,8 +299,16 @@ impl Layout {
                 }
             }
         };
+        // A cover arriving or leaving (it steps aside for the words where there is no room for
+        // both) grows from or shrinks to its own centre, as it resizes everywhere else, rather
+        // than popping in or out halfway.
+        let cover = match (a.cover, b.cover) {
+            (None, Some(y)) => Some(Rect::from_center_size(y.center(), y.size() * t)),
+            (Some(x), None) => Some(Rect::from_center_size(x.center(), x.size() * (1.0 - t))),
+            (x, y) => rect(x, y),
+        };
         Layout {
-            cover: rect(a.cover, b.cover),
+            cover,
             info: rect(a.info, b.info),
             region: b.region,
             centred: if t < 0.5 { a.centred } else { b.centred },
@@ -234,57 +327,82 @@ fn cover_size(max_w: f32, max_h: f32, wide: bool) -> (f32, f32) {
     }
 }
 
-/// `with_region` says whether there is a lyrics region (or queue sheet) to make room for; without
-/// one the cover stands alone, centred. `reserve` is room kept free on the right, for the queue
-/// drawer on a landscape screen. The cover and the region are one block centred in what remains,
-/// so the margins on both sides match.
-pub(crate) fn layout(
-    screen: Rect,
-    m: &Metrics,
-    with_region: bool,
-    reserve: f32,
-    wide: bool,
-) -> Layout {
-    let content = Rect::from_min_max(
+/// The room the view lays things out in: the screen less its margins and the controls' bands.
+fn content_rect(screen: Rect, m: &Metrics) -> Rect {
+    Rect::from_min_max(
         pos2(screen.left() + m.margin, screen.top() + m.top_band),
-        pos2(
-            screen.right() - m.margin - reserve,
-            screen.bottom() - m.bottom_band,
-        ),
+        pos2(screen.right() - m.margin, screen.bottom() - m.bottom_band),
+    )
+}
+
+/// The width of the left-hand column beside the lyrics: the cover's, or the cover and queue's.
+fn column_width(content: Rect, m: &Metrics) -> f32 {
+    (content.width() * 0.40).clamp(280.0 * m.scale, 560.0 * m.scale)
+}
+
+/// Cover beside the lyrics: the cover as large as its column and the height allow, the words
+/// at their own measure (`lyrics_max_w`), and the two centred as one block. The measure is fixed
+/// rather than fitted to each song's lines: fitted, every song moved the whole view. It is set
+/// for the lines songs mostly have, so the block sits balanced, and a longer line wraps. Returns
+/// the block's left edge, the cover's size and the words' width.
+fn side_by_side(content: Rect, m: &Metrics, wide: bool) -> (f32, f32, f32, f32) {
+    let gap = 20.0 * m.scale;
+    let height_for_cover = (content.height() - m.info_h - gap).max(120.0 * m.scale);
+    let (cw, ch) = cover_size(column_width(content, m), height_for_cover, wide);
+    let words = (content.width() - cw - m.column_gap).clamp(0.0, m.lyrics_max_w);
+    let left = content.left() + (content.width() - (cw + m.column_gap + words)) / 2.0;
+    (left, cw, ch, words)
+}
+
+/// How much of a vertical screen's height the cover takes over the lyrics, and over the queue
+/// sheet: less there, so the list gets the rows, the cover resizing as one gives way to the other.
+const LYRICS_COVER_SHARE: f32 = 0.38;
+const QUEUE_COVER_SHARE: f32 = 0.24;
+
+/// Stacked, for a vertical screen: the cover over the song's name, then the region for the
+/// lyrics or the queue sheet. `share` is how much of the height the cover may take.
+fn stacked(screen: Rect, m: &Metrics, wide: bool, share: f32) -> Layout {
+    let content = content_rect(screen, m);
+    let gap = 20.0 * m.scale;
+    let (cw, ch) = cover_size(content.width(), content.height() * share, wide);
+    let cover = Rect::from_min_size(
+        pos2(content.center().x - cw / 2.0, content.top()),
+        vec2(cw, ch),
     );
+    let info = Rect::from_min_size(
+        pos2(content.left(), cover.bottom() + gap),
+        vec2(content.width(), m.info_h),
+    );
+    let region = Rect::from_min_max(
+        pos2(content.left(), info.bottom() + gap * 0.6),
+        content.right_bottom(),
+    );
+    // Too little left for words: they take everything and the cover steps aside.
+    if region.height() < 160.0 * m.scale {
+        return Layout {
+            cover: None,
+            info: None,
+            region: Some(content),
+            centred: false,
+        };
+    }
+    Layout {
+        cover: Some(cover),
+        info: Some(info),
+        region: Some(region),
+        centred: true,
+    }
+}
+
+/// `with_region` says whether there is a lyrics region (or queue sheet) to make room for; without
+/// one the cover stands alone, centred. Beside the lyrics, see [`side_by_side`].
+pub(crate) fn layout(screen: Rect, m: &Metrics, with_region: bool, wide: bool) -> Layout {
+    let content = content_rect(screen, m);
     let gap = 20.0 * m.scale;
     let height_for_cover = (content.height() - m.info_h - gap).max(120.0 * m.scale);
 
     if with_region && m.portrait {
-        // Stacked: the cover over its words, then the region for the lyrics.
-        let (cw, ch) = cover_size(content.width(), content.height() * 0.38, wide);
-        let cover = Rect::from_min_size(
-            pos2(content.center().x - cw / 2.0, content.top()),
-            vec2(cw, ch),
-        );
-        let info = Rect::from_min_size(
-            pos2(content.left(), cover.bottom() + gap),
-            vec2(content.width(), m.info_h),
-        );
-        let region = Rect::from_min_max(
-            pos2(content.left(), info.bottom() + gap * 0.6),
-            content.right_bottom(),
-        );
-        // Too little left for words: they take everything and the cover steps aside.
-        if region.height() < 160.0 * m.scale {
-            return Layout {
-                cover: None,
-                info: None,
-                region: Some(content),
-                centred: false,
-            };
-        }
-        return Layout {
-            cover: Some(cover),
-            info: Some(info),
-            region: Some(region),
-            centred: true,
-        };
+        return stacked(screen, m, wide, LYRICS_COVER_SHARE);
     }
     if with_region && content.width() < m.narrow {
         return Layout {
@@ -295,16 +413,13 @@ pub(crate) fn layout(
         };
     }
     if with_region {
-        let column = (content.width() * 0.40).clamp(280.0 * m.scale, 560.0 * m.scale);
-        let words = (content.width() - column - m.column_gap).clamp(0.0, m.lyrics_max_w);
-        let left = content.left() + (content.width() - (column + m.column_gap + words)) / 2.0;
-        let (cw, ch) = cover_size(column, height_for_cover, wide);
+        let (left, cw, ch, words) = side_by_side(content, m, wide);
         let top = content.center().y - (ch + gap + m.info_h) / 2.0;
         let cover = Rect::from_min_size(pos2(left, top), vec2(cw, ch));
-        let info = Rect::from_min_size(pos2(left, cover.bottom() + gap), vec2(column, m.info_h));
+        let info = Rect::from_min_size(pos2(left, cover.bottom() + gap), vec2(cw, m.info_h));
         let region = Rect::from_min_max(
-            pos2(left + column + m.column_gap, content.top()),
-            pos2(left + column + m.column_gap + words, content.bottom()),
+            pos2(left + cw + m.column_gap, content.top()),
+            pos2(left + cw + m.column_gap + words, content.bottom()),
         );
         return Layout {
             cover: Some(cover),
@@ -333,6 +448,66 @@ pub(crate) fn layout(
         region: None,
         centred: true,
     }
+}
+
+/// The layout with the queue open on a landscape screen: the left-hand column holds the cover
+/// and the song's name at its head and the queue under them ([`drawer_split`]), and the lyrics
+/// keep their place on the right, so opening the queue moves nothing but the cover. The column
+/// is the cover's own width, laid out as [`layout`] lays out cover and lyrics. Without lyrics, or
+/// with too little room for them beside it, the column stands alone, centred. Returns the layout
+/// and the queue list's rect.
+pub(crate) fn queue_layout(
+    screen: Rect,
+    m: &Metrics,
+    with_region: bool,
+    wide: bool,
+) -> (Layout, Rect) {
+    let content = content_rect(screen, m);
+    let beside = with_region && content.width() >= m.narrow;
+    // Where the column is centred: on the closed cover, beside the lyrics, so the cover only
+    // grows or shrinks in place; on the screen, alone.
+    let (centre, room, region) = if beside {
+        let (left, cw, _, words) = side_by_side(content, m, wide);
+        let region = Rect::from_min_max(
+            pos2(left + cw + m.column_gap, content.top()),
+            pos2(left + cw + m.column_gap + words, content.bottom()),
+        );
+        (left + cw / 2.0, cw, Some(region))
+    } else {
+        let room = column_width(content, m).min(content.width());
+        (content.center().x, room, None)
+    };
+    // As wide as the cover at its head, so the cover, the name and the list share their edges:
+    // the cover is held to half the column's height, and on a wide screen that is narrower than
+    // the room beside the lyrics.
+    let inset = theme::CARD_INSET_X;
+    let (cw, ch) = cover_size(
+        room - 2.0 * inset,
+        head_cover_height(content.height(), m),
+        wide,
+    );
+    // But never so narrow that the rows lose their names: a short window holds the cover small,
+    // and with no cover at all (too short for one) the list takes the whole room.
+    let column = if ch < 120.0 * m.scale {
+        room
+    } else {
+        (cw + 2.0 * inset).max(QUEUE_MIN_W * m.scale).min(room)
+    };
+    let left = centre - column / 2.0;
+    let col = Rect::from_min_size(pos2(left, content.top()), vec2(column, content.height()));
+    let (cover, info, list) = match drawer_split(col, m, wide) {
+        Some((cover, info, list)) => (Some(cover), Some(info), list),
+        None => (None, None, col),
+    };
+    (
+        Layout {
+            cover,
+            info,
+            region,
+            centred: true,
+        },
+        list,
+    )
 }
 
 /// Whether the controls are showing: while something just moved, while paused (a still screen
@@ -371,8 +546,34 @@ pub(crate) fn lyrics_missing(for_current_song: bool, loading: bool, lines: Optio
 pub fn view(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let p = app.palette;
-    let screen = test_screen().unwrap_or_else(|| ctx.content_rect());
-    let m = Metrics::new(screen);
+    let window = test_screen().unwrap_or_else(|| ctx.content_rect());
+    // Kept in the window, the view takes the shell's shape: a title strip the height of the top
+    // bar, over a card inset by the gutter as the page card is. Fullscreen, it is the screen.
+    let windowed = in_window(app, &ctx);
+    let (screen, m, radius) = if windowed {
+        let card = Rect::from_min_max(
+            pos2(
+                window.left() + theme::GUTTER,
+                window.top() + theme::TITLEBAR_HEIGHT,
+            ),
+            pos2(
+                window.right() - theme::GUTTER,
+                window.bottom() - theme::GUTTER,
+            ),
+        );
+        let monitor = ctx.input(|i| i.viewport().monitor_size);
+        (
+            card,
+            Metrics::in_window(card, monitor),
+            CornerRadius::same(theme::radii().panel),
+        )
+    } else {
+        (window, Metrics::new(window), CornerRadius::ZERO)
+    };
+    let strip = Rect::from_min_max(
+        window.min,
+        pos2(window.right(), window.top() + theme::TITLEBAR_HEIGHT),
+    );
     let now = Instant::now();
 
     // Any sign of life brings the controls back.
@@ -387,7 +588,7 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let Some(track) = app.now.track.as_ref() else {
-        background(ui, &p, screen, p.accent);
+        background(ui, &p, screen, p.accent, radius);
         return;
     };
     let art_url = track.thumbnail.clone();
@@ -397,7 +598,7 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
     let video = app.video_open && track.wide;
 
     let tint = animated(&ctx, crate::ui::header_wash_colour(app, art_url.as_ref()));
-    background(ui, &p, screen, tint);
+    background(ui, &p, screen, tint, radius);
 
     // This view's own placeholders time themselves off the lyrics request, not off a page load
     // (the shell is not drawn, so nothing else is using the timer this frame).
@@ -410,118 +611,114 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
     // What is shown, and how far each part has eased in. The lyrics are asked for by the saved
     // setting but only shown when the song has some.
     let missing = app.lyrics_missing();
-    let lyrics_t =
-        ctx.animate_bool_with_time(Id::new("fs-lyrics-t"), app.fs.lyrics && !missing, 0.35);
-    let queue_t = ctx.animate_bool_with_time(Id::new("fs-drawer"), app.fs.queue, 0.28);
-    // On a vertical screen the queue is a sheet in the same region as the lyrics, so the region
-    // has to exist for either.
-    let region_t = if m.portrait {
-        lyrics_t.max(queue_t)
+    app.fs.exclusive = m.portrait || content_rect(screen, &m).width() < m.narrow;
+    let (show_lyrics, show_queue) = app.fs.shown(!missing);
+    let lyrics_t = ctx.animate_bool_with_time(Id::new("fs-lyrics-t"), show_lyrics, 0.35);
+    // Whether the cover shares the screen with anything (the words, or the queue where it
+    // takes their place), as its own value: where the two take turns it stays put through the
+    // swap. Taken from the two fades instead, it dipped while one ran out and the other in, and
+    // the cover wobbled toward standing alone and back.
+    let shares = show_lyrics || (app.fs.exclusive && show_queue);
+    let region_t = ctx.animate_bool_with_time(Id::new("fs-region-t"), shares, 0.35);
+    let queue_t = ctx.animate_bool_with_time(Id::new("fs-drawer"), show_queue, 0.28);
+    // Two arrangements, by the screen's shape. Landscape: the cover beside the lyrics, and with
+    // the queue open the cover heads the queue in that same column ([`queue_layout`]), the lyrics
+    // staying where they are. Portrait: the cover over the lyrics, the queue a sheet in their
+    // place. Each glides between its states rather than switching.
+    let alone = layout(screen, &m, false, video);
+    let with = layout(screen, &m, true, video);
+    let (lay, centre_t, info_m, region, region_alpha, wrap_w, list) = if m.portrait {
+        // Over the queue the cover takes less of the height, so the list has the rows; it
+        // resizes as the lyrics and the queue take turns.
+        let sheet = stacked(screen, &m, video, QUEUE_COVER_SHARE);
+        let stack = Layout::lerp(&with, &sheet, queue_t);
+        let lay = Layout::lerp(&alone, &stack, region_t);
+        let centre_t = mix(flag(alone.centred), flag(stack.centred), region_t);
+        let list = sheet
+            .region
+            .unwrap_or(screen)
+            .translate(vec2(0.0, (1.0 - queue_t) * 40.0 * m.scale));
+        app.fs.cover_in_drawer = show_queue && sheet.cover.is_some();
+        let small = drawer_type(&m);
+        let info_m = Metrics {
+            title: mix(m.title, small.title, queue_t),
+            credits: mix(m.credits, small.credits, queue_t),
+            ..m
+        };
+        (
+            lay,
+            centre_t,
+            info_m,
+            with.region,
+            lyrics_t * (1.0 - queue_t),
+            with.region.map(|r| r.width()),
+            list,
+        )
     } else {
-        lyrics_t
-    };
-    let reserve = if m.portrait {
-        0.0
-    } else {
-        queue_t * (m.drawer_w + m.drawer_gap)
-    };
-    let alone = layout(screen, &m, false, reserve, video);
-    let with = layout(screen, &m, true, reserve, video);
-    let lay = Layout::lerp(&alone, &with, region_t);
-    let centre_t = {
-        let a = f32::from(u8::from(alone.centred));
-        let b = f32::from(u8::from(with.centred));
-        a + (b - a) * region_t
+        let closed = Layout::lerp(&alone, &with, region_t);
+        let closed_centre = mix(flag(alone.centred), flag(with.centred), region_t);
+        let (open_alone, list_alone) = queue_layout(screen, &m, false, video);
+        let (open_with, list_with) = queue_layout(screen, &m, true, video);
+        let open = Layout::lerp(&open_alone, &open_with, region_t);
+        let lay = Layout::lerp(&closed, &open, queue_t);
+        // The name under the cover settles at the queue head's smaller size as the queue opens.
+        let small = drawer_type(&m);
+        let info_m = Metrics {
+            title: mix(m.title, small.title, queue_t),
+            credits: mix(m.credits, small.credits, queue_t),
+            ..m
+        };
+        // The lyrics keep their place beside the column; where there was no room for them beside
+        // the queue, they fade out as it opens instead. Wrapped to the width they settle at, not
+        // one changing every frame, which would re-flow the lines as they glide.
+        let region = match (with.region, open_with.region) {
+            (Some(a), Some(b)) => Some(mix_rect(a, b, queue_t)),
+            (a, _) => a,
+        };
+        let alpha = lyrics_t
+            * if open_with.region.is_some() {
+                1.0
+            } else {
+                1.0 - queue_t
+            };
+        let settle = if show_queue {
+            open_with.region.or(with.region)
+        } else {
+            with.region
+        };
+        app.fs.cover_in_drawer = show_queue && open.cover.is_some();
+        let list = mix_rect(list_alone, list_with, region_t)
+            .translate(vec2(0.0, (1.0 - queue_t) * 24.0 * m.scale));
+        (
+            lay,
+            mix(closed_centre, 1.0, queue_t),
+            info_m,
+            region,
+            alpha,
+            settle.map(|r| r.width()),
+            list,
+        )
     };
 
     if let Some(cover) = lay.cover {
-        if video {
-            // A music video plays where the cover would, at its own 16:9.
-            // The cover's own curve, so a video and a cover in the same place round alike.
-            let radius = crate::widgets::ArtShape::Wide.radius(cover);
-            ui.painter().rect_filled(cover, radius, Color32::BLACK);
-            crate::ui::video::paint_frame(app, ui, cover, radius);
-            if ui
-                .interact(cover, Id::new("fs-video"), Sense::click())
-                .clicked()
-            {
-                app.toggle_playback();
-            }
-        } else {
-            // The cover at this size may not be fetched yet (the bar only ever asked for its small
-            // one): until it lands, the small one stretched stands in, rather than an empty disc.
-            let large = crate::ui::art_texture(
-                &mut app.images,
-                &app.backend,
-                &ctx,
-                art_url.as_ref(),
-                cover.width(),
-            )
-            .cloned();
-            let texture = large.or_else(|| {
-                crate::ui::art_texture(&mut app.images, &app.backend, &ctx, art_url.as_ref(), 56.0)
-                    .cloned()
-            });
-            widgets::paint_art(ui, &p, cover, texture.as_ref(), widgets::ArtShape::Square);
-        }
+        paint_cover(app, ui, cover, art_url.as_ref(), video);
     }
     if let Some(info) = lay.info {
-        info_text(ui, &p, &m, info, &title, &credits, centre_t);
+        info_text(ui, &p, &info_m, info, &title, &credits, centre_t);
     }
-
-    // Where the queue drawer sits. The block (cover and lyrics) and the drawer are one group
-    // centred on the screen, so the drawer's margin on the right is the cover's on the left:
-    // laid out with the drawer's room set aside, whichever way the animation is going. It slides
-    // in by its whole width, so its left edge is never over the words it is making room beside.
-    let drawer = (!m.portrait).then(|| {
-        let room = m.drawer_w + m.drawer_gap;
-        let open = Layout::lerp(
-            &layout(screen, &m, false, room, video),
-            &layout(screen, &m, true, room, video),
-            region_t,
+    if let Some(region) = region
+        && region_alpha > 0.01
+    {
+        let region = Rect::from_min_size(
+            region.min,
+            vec2(wrap_w.unwrap_or(region.width()), region.height()),
         );
-        drawer_placement(screen, &m, &open, queue_t)
-    });
-
-    // The lyrics, fading in over their region; on a vertical screen they fade out as the queue
-    // sheet takes the same place.
-    if let Some(region) = with.region {
-        let alpha = lyrics_t * if m.portrait { 1.0 - queue_t } else { 1.0 };
-        if alpha > 0.01 {
-            // Wrapped to the width they will settle at, not the one the drawer is animating
-            // through: a width that changes every frame re-flows the lines every frame, and the
-            // whole column shimmers and jumps. The position still glides; only the wrap is held.
-            let settle = if m.portrait || !app.fs.queue {
-                0.0
-            } else {
-                m.drawer_w + m.drawer_gap
-            };
-            let wrapped = layout(screen, &m, true, settle, video)
-                .region
-                .map_or(region.width(), |r| r.width());
-            let region = Rect::from_min_size(region.min, vec2(wrapped, region.height()));
-            // While the drawer is on its way out the words are wider than the room it has
-            // left; they are revealed as it goes rather than drawn over it.
-            let visible_right = drawer
-                .filter(|_| queue_t > 0.001)
-                .map_or(f32::INFINITY, |(rect, offset)| {
-                    rect.left() + offset.x - m.drawer_gap * 0.5
-                });
-            let mut layer = ui.new_child(UiBuilder::new().max_rect(region));
-            layer.multiply_opacity(alpha);
-            lyrics_column(app, &mut layer, &m, region, visible_right, &video_id);
-        }
+        let mut layer = ui.new_child(UiBuilder::new().max_rect(region));
+        layer.multiply_opacity(region_alpha);
+        lyrics_column(app, &mut layer, &m, region, &video_id);
     }
-
     if queue_t > 0.001 {
-        let (rect, offset) = match drawer {
-            Some(placed) => placed,
-            None => (
-                with.region.unwrap_or(screen),
-                vec2(0.0, (1.0 - queue_t) * 40.0 * m.scale),
-            ),
-        };
-        queue_region(app, ui, &m, rect.translate(offset), queue_t);
+        queue_region(app, ui, &m, list, queue_t);
     }
 
     // The controls, as one layer that fades.
@@ -533,9 +730,12 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
         pos2(screen.left(), screen.top()),
         pos2(screen.right(), screen.top() + m.top_band),
     );
-    let hovering = ctx
-        .pointer_hover_pos()
-        .is_some_and(|pos| bottom.contains(pos) || top.contains(pos));
+    if windowed {
+        title_strip(app, ui, strip, missing);
+    }
+    let hovering = ctx.pointer_hover_pos().is_some_and(|pos| {
+        bottom.contains(pos) || top.contains(pos) || (windowed && strip.contains(pos))
+    });
     let since = now.saturating_duration_since(app.fs.last_motion);
     let paused = app.player_state.paused || !app.playback_started;
     let visible = controls_visible(since, paused, hovering);
@@ -550,7 +750,76 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
     }
     let mut layer = ui.new_child(UiBuilder::new().max_rect(screen));
     layer.multiply_opacity(alpha);
-    controls(app, &mut layer, &m, bottom, top, missing);
+    controls(app, &mut layer, &m, bottom, top, missing, windowed);
+}
+
+/// The cover, or the music video playing where it would be, at its own 16:9.
+fn paint_cover(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    cover: Rect,
+    art_url: Option<&std::sync::Arc<str>>,
+    video: bool,
+) {
+    let ctx = ui.ctx().clone();
+    if video {
+        // The cover's own curve, so a video and a cover in the same place round alike.
+        let radius = crate::widgets::ArtShape::Wide.radius(cover);
+        ui.painter().rect_filled(cover, radius, Color32::BLACK);
+        crate::ui::video::paint_frame(app, ui, cover, radius);
+        if ui
+            .interact(cover, Id::new("fs-video"), Sense::click())
+            .clicked()
+        {
+            app.toggle_playback();
+        }
+        return;
+    }
+    // The cover at this size may not be fetched yet (the bar only ever asked for its small
+    // one): until it lands, the small one stretched stands in, rather than an empty disc.
+    let large = crate::ui::art_texture(&mut app.images, &app.backend, &ctx, art_url, cover.width())
+        .cloned();
+    let texture = large.or_else(|| {
+        crate::ui::art_texture(&mut app.images, &app.backend, &ctx, art_url, 56.0).cloned()
+    });
+    let p = app.palette;
+    widgets::paint_art(ui, &p, cover, texture.as_ref(), widgets::ArtShape::Square);
+}
+
+/// Whether the view is showing in the window rather than fullscreen: the window is not
+/// fullscreen, and the view is not waiting for it to become so.
+pub(crate) fn in_window(app: &App, ctx: &egui::Context) -> bool {
+    !app.fs.manages_window && !crate::window_fullscreen::is(ctx)
+}
+
+/// The title strip of a view kept in the window, laid out as the top bar is: the window is
+/// dragged from it, its buttons sit where the top bar puts them (on macOS those are the traffic
+/// lights, at the other end), and the view's toggles are centred between. It stays up while the
+/// controls below fade, as the top bar would.
+fn title_strip(app: &mut App, ui: &mut egui::Ui, strip: Rect, missing: bool) {
+    let p = app.palette;
+    crate::chrome::drag_surface(ui, strip, app.decorated, "now-playing");
+    if !app.decorated && !crate::chrome::NATIVE_WINDOW_BUTTONS {
+        // The top bar's own inset: the gutter and its frame's margin inside it.
+        let inner = strip.shrink2(vec2(theme::GUTTER + 6.0, 0.0));
+        let mut right = ui.new_child(
+            UiBuilder::new()
+                .max_rect(inner)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        if crate::chrome::window_buttons(&mut right, &p) {
+            app.request_close(ui.ctx());
+        }
+    }
+    let gap = ui.spacing().item_spacing.x;
+    let width = 4.0 * (STRIP_ICON + 14.0) + 3.0 * gap;
+    let row = Rect::from_center_size(strip.center(), vec2(width, STRIP_ICON + 14.0));
+    let mut tui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(row)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    toggles(app, &mut tui, STRIP_ICON, missing, true);
 }
 
 /// A test aid for debug builds: `REFRYT_FS_SIZE=600x1000` lays the view out in a rectangle that
@@ -587,16 +856,53 @@ fn wash(p: &theme::Palette, tint: Color32) -> (Color32, Color32) {
 
 /// A base with the cover's tint washing down from the top. As opaque as the shell is: solid by
 /// default, and see-through (and blurred, where the compositor does that) when the window is.
-fn background(ui: &egui::Ui, p: &theme::Palette, screen: Rect, tint: Color32) {
+fn background(
+    ui: &egui::Ui,
+    p: &theme::Palette,
+    screen: Rect,
+    tint: Color32,
+    radius: CornerRadius,
+) {
     let (top, bottom) = wash(p, tint);
     let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(screen.left_top(), top);
-    mesh.colored_vertex(screen.right_top(), top);
-    mesh.colored_vertex(screen.right_bottom(), bottom);
-    mesh.colored_vertex(screen.left_bottom(), bottom);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
+    if radius == CornerRadius::ZERO {
+        mesh.colored_vertex(screen.left_top(), top);
+        mesh.colored_vertex(screen.right_top(), top);
+        mesh.colored_vertex(screen.right_bottom(), bottom);
+        mesh.colored_vertex(screen.left_bottom(), bottom);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        ui.painter().add(egui::Shape::mesh(mesh));
+        return;
+    }
+    // Kept in the window, the wash is a card: cut to the panel corners, each vertex coloured by
+    // its height and the anti-aliased edge keeping the soft alpha the tessellator gave it, with
+    // the cards' own hairline where the theme draws one.
+    let mut tessellator = egui::epaint::Tessellator::new(
+        ui.ctx().pixels_per_point(),
+        egui::epaint::TessellationOptions::default(),
+        [1, 1],
+        Vec::new(),
+    );
+    tessellator.tessellate_shape(
+        egui::Shape::rect_filled(screen, radius, Color32::WHITE),
+        &mut mesh,
+    );
+    for vertex in &mut mesh.vertices {
+        let t = ((vertex.pos.y - screen.top()) / screen.height()).clamp(0.0, 1.0);
+        vertex.color = top
+            .lerp_to_gamma(bottom, t)
+            .gamma_multiply(f32::from(vertex.color.a()) / 255.0);
+    }
     ui.painter().add(egui::Shape::mesh(mesh));
+    if let Some(edge) = p.card_edge() {
+        ui.painter().rect_stroke(
+            screen,
+            radius,
+            egui::Stroke::new(1.0, edge),
+            egui::StrokeKind::Inside,
+        );
+    }
 }
 
 /// The tint eased toward its target, so a song change washes into the next colour instead of
@@ -687,25 +993,10 @@ fn lyrics_skeleton(ui: &mut egui::Ui, p: &theme::Palette, m: &Metrics, rect: Rec
 }
 
 /// The words, large, gliding to keep the line being sung in place.
-/// The lyrics in `rect`, wrapped to its width. `visible_right` is as far right as they may be
-/// seen, which is less than `rect`'s edge only while the queue drawer is still moving over it.
-fn lyrics_column(
-    app: &mut App,
-    ui: &mut egui::Ui,
-    m: &Metrics,
-    rect: Rect,
-    visible_right: f32,
-    video_id: &str,
-) {
+/// The lyrics in `rect`, wrapped to its width.
+fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, video_id: &str) {
     let p = app.palette;
     let ctx = ui.ctx().clone();
-    let visible = Rect::from_min_max(
-        rect.min,
-        pos2(
-            rect.right().min(visible_right).max(rect.left()),
-            rect.bottom(),
-        ),
-    );
     if app.lyrics_loading {
         lyrics_skeleton(ui, &p, m, rect);
         return;
@@ -836,7 +1127,7 @@ fn lyrics_column(
 
     let anchor = rect.top() + rect.height() * ANCHOR;
     let view = app.fs.scroll + app.fs.manual;
-    let painter = ui.painter().with_clip_rect(visible);
+    let painter = ui.painter().with_clip_rect(rect);
     let melt = LYRICS_FADE * m.scale;
     let from = painted_so_far(ui);
     let mut clicked = None;
@@ -849,7 +1140,7 @@ fn lyrics_column(
         let line_rect = Rect::from_min_size(pos2(rect.left(), top_y), vec2(rect.width(), height));
         let hit = line_rect
             .expand2(vec2(12.0, m.line_gap / 2.0))
-            .intersect(visible);
+            .intersect(rect);
         let response = ui.interact(hit, Id::new(("fs-lyric", i)), Sense::click());
         let mut want = line_alpha(i, active);
         if response.hovered() {
@@ -896,7 +1187,7 @@ fn queue_region(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, t: f3
     // so whatever is behind them shows: the cover's wash, or the desktop through a see-through
     // window. A band painted in the background's colour only matched a flat, opaque background,
     // and anywhere else read as a box over the end of the list.
-    let fade = 36.0 * m.scale;
+    let fade = 88.0 * m.scale;
     let (above, below) = edge_fades(app.fs.queue_scroll, fade);
     fade_painted(
         ui.ctx(),
@@ -908,37 +1199,78 @@ fn queue_region(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, t: f3
     );
 }
 
-/// The seek bar and transport along the bottom, the toggles in the top-right corner.
-/// Where the queue drawer sits on a landscape screen, and how far it is still to slide.
-///
-/// `open` is the layout with the drawer's room set aside. The block it holds and the drawer are
-/// one group centred on the screen, so the drawer's margin on the right is the cover's on the
-/// left, whatever the block's width. `offset` carries the whole drawer off the right edge at
-/// `queue_t` 0 and nowhere at 1, so it moves as a unit rather than growing out of its place.
-pub(crate) fn drawer_placement(
-    screen: Rect,
-    m: &Metrics,
-    open: &Layout,
-    queue_t: f32,
-) -> (Rect, egui::Vec2) {
-    let left_margin = open
-        .cover
-        .map(|c| c.left())
-        .or_else(|| open.region.map(|r| r.left()))
-        .unwrap_or(screen.left() + m.margin)
-        - screen.left();
-    let right = screen.right() - left_margin;
-    let rect = Rect::from_min_max(
-        pos2(right - m.drawer_w, screen.top() + m.top_band),
-        pos2(right, screen.bottom() - m.bottom_band),
+/// The drawer split for a cover at its head: the cover (or video) as wide as the drawer, down to
+/// about half its height, the song's name under it, and the list in what is left. `None` when the
+/// drawer is too short for a cover worth showing and a list under it.
+pub(crate) fn drawer_split(drawer: Rect, m: &Metrics, wide: bool) -> Option<(Rect, Rect, Rect)> {
+    // Lined up with the rows' own art, which sit in from the drawer's edge by the card inset.
+    let inner = drawer.shrink2(vec2(theme::CARD_INSET_X, 0.0));
+    let (cw, ch) = cover_size(inner.width(), head_cover_height(drawer.height(), m), wide);
+    if ch < 120.0 * m.scale {
+        return None;
+    }
+    // Centred, with the name under it: when the drawer is taller than wide enough the cover
+    // fills it, and when it is held to half the height the head stays one balanced block rather
+    // than a cover hugging one edge with a gap beside it.
+    let cover = Rect::from_min_size(pos2(inner.center().x - cw / 2.0, inner.top()), vec2(cw, ch));
+    let small = drawer_type(m);
+    let info = Rect::from_min_size(
+        pos2(inner.left(), cover.bottom() + 14.0 * m.scale),
+        vec2(inner.width(), small.title * 1.4 + small.credits * 1.6),
     );
-    (
-        rect,
-        vec2((1.0 - queue_t) * (m.drawer_w + left_margin), 0.0),
-    )
+    let list = Rect::from_min_max(pos2(drawer.left(), info.bottom()), drawer.max);
+    Some((cover, info, list))
 }
 
-fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Rect, missing: bool) {
+/// The rows the queue keeps under a cover at its head, whatever the height: its header and
+/// three songs. In the queue's own sizes, which do not scale with the view.
+/// The narrowest the queue column gets under a small cover, so its rows keep readable names.
+const QUEUE_MIN_W: f32 = 300.0;
+
+const HEAD_LIST_MIN: f32 = 30.0 + 3.0 * theme::ROW_HEIGHT;
+
+/// How tall the cover at the head of a column `height` tall may be: half of it, and never so
+/// much that the queue under it is left fewer rows than [`HEAD_LIST_MIN`]. On a short window
+/// the cover gives way to the list, not the list to the cover.
+fn head_cover_height(height: f32, m: &Metrics) -> f32 {
+    let small = drawer_type(m);
+    let name = 14.0 * m.scale + small.title * 1.4 + small.credits * 1.6;
+    (height * 0.5).min(height - name - HEAD_LIST_MIN)
+}
+
+/// `a` to `b` by `t`.
+fn mix(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn flag(on: bool) -> f32 {
+    f32::from(u8::from(on))
+}
+
+/// One rect gliding into another by `t`.
+fn mix_rect(a: Rect, b: Rect, t: f32) -> Rect {
+    Rect::from_min_max(a.min + (b.min - a.min) * t, a.max + (b.max - a.max) * t)
+}
+
+/// The song's name at the head of the drawer: a size between the big view's and the queue
+/// rows' own, so it heads the list without crowding it out.
+fn drawer_type(m: &Metrics) -> Metrics {
+    Metrics {
+        title: 21.0 * m.scale,
+        credits: 15.0 * m.scale,
+        ..*m
+    }
+}
+
+fn controls(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    m: &Metrics,
+    bottom: Rect,
+    top: Rect,
+    missing: bool,
+    windowed: bool,
+) {
     let p = app.palette;
     let s = m.scale;
     let column = Rect::from_center_size(
@@ -1081,9 +1413,13 @@ fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Re
         }
     }
 
-    // Toggles, top-right: Exit sits in the corner, Queue and Lyrics to its left.
-    let toggles = Rect::from_min_max(
-        pos2(top.right() - m.margin - 160.0 * s, top.top() + 18.0 * s),
+    // Toggles, top-right: Exit sits in the corner, then Fullscreen, Queue and Lyrics to its
+    // left. Kept in the window they are in the title strip instead (`title_strip`).
+    if windowed {
+        return;
+    }
+    let toggles_rect = Rect::from_min_max(
+        pos2(top.right() - m.margin - 210.0 * s, top.top() + 18.0 * s),
         pos2(
             top.right() - m.margin + 8.0,
             top.top() + 18.0 * s + m.icon + 14.0,
@@ -1091,36 +1427,59 @@ fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Re
     );
     let mut tui = ui.new_child(
         UiBuilder::new()
-            .max_rect(toggles)
+            .max_rect(toggles_rect)
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    if widgets::icon_button(&mut tui, &p, Icon::Minimize2, m.icon, false)
-        .hint(crate::ui::tips::EXIT_FULLSCREEN)
+    toggles(app, &mut tui, m.icon, missing, false);
+}
+
+/// Exit, Fullscreen, Queue and Lyrics, into a right-to-left `ui`, so Exit is the rightmost.
+fn toggles(app: &mut App, ui: &mut egui::Ui, icon: f32, missing: bool, windowed: bool) {
+    let p = app.palette;
+    let exit_hint = if windowed {
+        crate::ui::tips::CLOSE_PLAYER
+    } else {
+        crate::ui::tips::EXIT_FULLSCREEN
+    };
+    let (glyph, hint) = if windowed {
+        (Icon::Maximize, crate::ui::tips::FULLSCREEN)
+    } else {
+        (Icon::Minimize, crate::ui::tips::LEAVE_FULLSCREEN)
+    };
+    if widgets::icon_button(ui, &p, glyph, icon, false)
+        .hint(hint)
         .clicked()
     {
-        app.fs_exit(ui.ctx());
+        app.fs_toggle_window(ui.ctx());
     }
-    if widgets::icon_button(&mut tui, &p, Icon::ListMusic, m.icon, app.fs.queue)
+    let (show_lyrics, show_queue) = app.fs.shown(!missing);
+    if widgets::icon_button(ui, &p, Icon::ListMusic, icon, show_queue)
         .hint(crate::ui::tips::QUEUE)
         .clicked()
     {
-        app.fs.queue = !app.fs.queue;
+        app.fs.press_queue(!missing);
+        app.fs_save_choice(ui.ctx());
     }
     // A song with no lyrics greys the button out and says so; the saved choice is untouched.
-    let lyrics_button = tui.add_enabled_ui(!missing, |ui| {
-        widgets::icon_button(ui, &p, Icon::MicVocal, m.icon, app.fs.lyrics && !missing)
+    let lyrics_button = ui.add_enabled_ui(!missing, |ui| {
+        widgets::icon_button(ui, &p, Icon::MicVocal, icon, show_lyrics)
             .hint(crate::ui::tips::LYRICS)
     });
     if lyrics_button.inner.clicked() {
-        app.fs.lyrics = !app.fs.lyrics;
-        let on = app.fs.lyrics;
-        let ctx = ui.ctx().clone();
-        app.update_settings(&ctx, |s| s.fullscreen_lyrics = on);
+        app.fs.press_lyrics(!missing);
+        app.fs_save_choice(ui.ctx());
     }
     if missing {
         lyrics_button
             .response
             .on_disabled_hover_text("No lyrics for this song");
+    }
+    // Laid out right to left: closing the view comes first, window fullscreen last.
+    if widgets::icon_button(ui, &p, Icon::Minimize2, icon, false)
+        .hint(exit_hint)
+        .clicked()
+    {
+        app.fs_exit(ui.ctx());
     }
 }
 
@@ -1128,18 +1487,279 @@ fn controls(app: &mut App, ui: &mut egui::Ui, m: &Metrics, bottom: Rect, top: Re
 mod tests {
     use super::*;
 
+    /// With the queue open beside the lyrics, the cover heads the column it had, the lyrics keep
+    /// their place, and the queue list runs down the column under the cover.
+    #[test]
+    fn the_queue_opens_under_the_cover_and_the_lyrics_stay() {
+        for (w, h) in [
+            (1920.0, 1080.0),
+            (2560.0, 1440.0),
+            (1366.0, 768.0),
+            (1100.0, 720.0),
+        ] {
+            let screen = screen(w, h);
+            let m = Metrics::new(screen);
+            let closed = layout(screen, &m, true, false);
+            let (open, list) = queue_layout(screen, &m, true, false);
+            let (cover, region) = (open.cover.unwrap(), open.region.unwrap());
+            assert_eq!(region, closed.region.unwrap(), "{w}x{h}: the lyrics moved");
+            let was = closed.cover.unwrap();
+            assert!(
+                cover.left() >= was.left() - 0.5 && cover.right() <= region.left(),
+                "{w}x{h}"
+            );
+            assert!(list.top() >= open.info.unwrap().bottom() && list.left() <= cover.left());
+            assert!(
+                list.right() < region.left(),
+                "{w}x{h}: the list runs under the words"
+            );
+        }
+    }
+
+    /// The cover and the words are one block centred on the screen, the same for every song:
+    /// the space left of the cover is the space right of the words' measure.
+    #[test]
+    fn the_block_is_centred_and_the_same_for_every_song() {
+        for (w, h) in [(1920.0, 1080.0), (2560.0, 1440.0), (1366.0, 768.0)] {
+            let screen = screen(w, h);
+            let m = Metrics::new(screen);
+            let l = layout(screen, &m, true, false);
+            let (cover, region) = (l.cover.unwrap(), l.region.unwrap());
+            assert!(
+                (region.width() - m.lyrics_max_w).abs() < 0.5,
+                "{w}x{h}: measure"
+            );
+            assert!(
+                (cover.left() - (w - region.right())).abs() < 0.5,
+                "{w}x{h}: the sides differ"
+            );
+        }
+    }
+
+    /// With the queue open the column is the cover's width and centred where the closed cover
+    /// was: the cover shrinks in place and its edges are the list's.
+    #[test]
+    fn the_queue_column_shares_the_covers_edges() {
+        for (w, h) in [(1920.0, 1080.0), (2560.0, 1440.0), (1100.0, 720.0)] {
+            let screen = screen(w, h);
+            let m = Metrics::new(screen);
+            let closed = layout(screen, &m, true, false).cover.unwrap();
+            let (open, list) = queue_layout(screen, &m, true, false);
+            let cover = open.cover.unwrap();
+            assert!(
+                (cover.center().x - closed.center().x).abs() < 0.5,
+                "{w}x{h}: moved"
+            );
+            let want = (cover.width() + 2.0 * theme::CARD_INSET_X).max(QUEUE_MIN_W * m.scale);
+            assert!(
+                (list.width() - want).abs() < 0.5,
+                "{w}x{h}: the list is not the cover's width"
+            );
+        }
+    }
+
+    /// Without lyrics, and on a window too narrow for them beside it, the column stands alone
+    /// in the middle.
+    #[test]
+    fn the_queue_column_stands_alone_without_room_for_lyrics() {
+        for (w, h, region) in [(1920.0, 1080.0, false), (420.0, 300.0, true)] {
+            let screen = screen(w, h);
+            let m = Metrics::new(screen);
+            let (open, list) = queue_layout(screen, &m, region, false);
+            assert!(open.region.is_none());
+            assert!(
+                (list.center().x - screen.center().x).abs() < 0.5,
+                "{w}: off centre"
+            );
+        }
+    }
+
+    /// A drawer heading with the cover stacks cover, name and list top to bottom inside it, the
+    /// cover square and no taller than half the drawer; a drawer too short for one gets none.
+    #[test]
+    fn drawer_split_stacks_inside_the_drawer() {
+        let m = Metrics::new(screen(1100.0, 720.0));
+        let drawer = Rect::from_min_size(pos2(700.0, 70.0), vec2(320.0, 480.0));
+        let (cover, info, list) = drawer_split(drawer, &m, false).expect("room for a cover");
+        assert!(drawer.contains_rect(cover) && drawer.contains_rect(list));
+        assert_eq!(cover.width(), cover.height());
+        assert!(cover.height() <= drawer.height() * 0.5);
+        assert!(cover.bottom() < info.top() && info.bottom() <= list.top());
+        assert_eq!(list.bottom(), drawer.bottom());
+        let short = Rect::from_min_size(pos2(700.0, 70.0), vec2(320.0, 120.0));
+        assert!(drawer_split(short, &m, false).is_none());
+    }
+
+    /// Where both fit, both show and each button flips its own.
+    #[test]
+    fn lyrics_and_queue_both_show_where_they_fit() {
+        let mut fs = State::entering(true, false, false, false);
+        fs.press_queue(true);
+        assert_eq!(fs.shown(true), (true, true));
+        fs.press_lyrics(true);
+        assert_eq!(fs.shown(true), (false, true));
+        assert!(!fs.lyrics && fs.queue);
+    }
+
+    /// Where only one fits, turning one on puts it in front, a button lights only for what
+    /// shows, and pressing the hidden one brings it forward rather than turning it off. Both
+    /// choices survive: with room again, both show.
+    #[test]
+    fn where_only_one_fits_the_last_turned_on_shows() {
+        let mut fs = State::entering(true, false, false, false);
+        fs.exclusive = true;
+        fs.press_queue(true);
+        assert_eq!(fs.shown(true), (false, true), "the queue goes in front");
+        fs.press_lyrics(true);
+        assert_eq!(
+            fs.shown(true),
+            (true, false),
+            "the hidden lyrics come forward"
+        );
+        assert!(fs.lyrics && fs.queue, "nothing was turned off");
+        fs.press_lyrics(true);
+        assert_eq!(
+            fs.shown(true),
+            (false, true),
+            "hiding the lyrics leaves the queue"
+        );
+        fs.press_lyrics(true);
+        fs.exclusive = false;
+        assert_eq!(
+            fs.shown(true),
+            (true, true),
+            "a wider window shows both again"
+        );
+    }
+
+    /// A song without lyrics leaves the queue to show alone, whichever came last.
+    #[test]
+    fn without_lyrics_the_queue_shows_alone() {
+        let mut fs = State::entering(true, false, false, false);
+        fs.exclusive = true;
+        fs.queue = true;
+        assert_eq!(fs.shown(false), (false, true));
+    }
+
+    /// However short the screen, the queue under a cover keeps its header and three rows; a
+    /// screen too short for both drops the cover rather than the rows.
+    #[test]
+    fn the_queue_keeps_its_rows_under_the_cover() {
+        for (w, h) in [
+            (1920.0, 1080.0),
+            (1366.0, 768.0),
+            (900.0, 600.0),
+            (760.0, 480.0),
+        ] {
+            let screen = screen(w, h);
+            let m = Metrics::new(screen);
+            for region in [true, false] {
+                let (open, list) = queue_layout(screen, &m, region, false);
+                if open.cover.is_some() {
+                    assert!(list.height() >= HEAD_LIST_MIN - 0.5, "{w}x{h}: rows lost");
+                }
+                assert!(
+                    list.width() >= QUEUE_MIN_W * m.scale - 0.5,
+                    "{w}x{h}: rows too narrow for their names"
+                );
+            }
+        }
+    }
+
+    /// A cover arriving grows from its own centre, and one leaving shrinks to it.
+    #[test]
+    fn a_cover_coming_or_going_resizes_in_place() {
+        let cover = Rect::from_min_size(pos2(100.0, 100.0), vec2(400.0, 400.0));
+        let with = Layout {
+            cover: Some(cover),
+            info: None,
+            region: None,
+            centred: true,
+        };
+        let without = Layout {
+            cover: None,
+            ..with
+        };
+        let half = Layout::lerp(&without, &with, 0.5).cover.unwrap();
+        assert_eq!(half.center(), cover.center());
+        assert!((half.width() - 200.0).abs() < 0.01);
+        let going = Layout::lerp(&with, &without, 0.75).cover.unwrap();
+        assert!((going.width() - 100.0).abs() < 0.01);
+    }
+
+    /// On a vertical screen the cover takes less of the height over the queue than over the
+    /// lyrics, centred the same, so taking turns resizes it in place.
+    #[test]
+    fn over_the_queue_a_vertical_cover_is_smaller() {
+        let screen = screen(1080.0, 1920.0);
+        let m = Metrics::new(screen);
+        let lyrics = stacked(screen, &m, false, LYRICS_COVER_SHARE)
+            .cover
+            .unwrap();
+        let queue = stacked(screen, &m, false, QUEUE_COVER_SHARE).cover.unwrap();
+        assert!(queue.height() < lyrics.height());
+        assert!((queue.center().x - lyrics.center().x).abs() < 0.5);
+        assert_eq!(queue.top(), lyrics.top());
+    }
+
+    /// The view opens in the window and leaves it alone, fullscreen or not.
+    #[test]
+    fn entering_leaves_the_window_alone() {
+        for was_fullscreen in [false, true] {
+            let fs = State::entering(true, false, false, was_fullscreen);
+            assert!(fs.open && fs.lyrics && !fs.manages_window);
+            assert_eq!(fs.window_was_fullscreen, was_fullscreen);
+        }
+    }
+
+    /// The view opens as it was left: here with lyrics and queue both on and the lyrics in
+    /// front, which is how it first opens.
+    #[test]
+    fn opening_shows_both_and_lyrics_first_where_one_fits() {
+        let mut fs = State::entering(true, true, false, false);
+        assert_eq!(fs.shown(true), (true, true));
+        fs.exclusive = true;
+        assert_eq!(fs.shown(true), (true, false));
+        assert_eq!(fs.shown(false), (false, true));
+    }
+
+    /// With the queue turned on last, it is the one in front again where only one fits.
+    #[test]
+    fn reopening_keeps_the_queue_in_front() {
+        let mut fs = State::entering(true, true, true, false);
+        fs.exclusive = true;
+        assert_eq!(fs.shown(true), (false, true));
+    }
+
+    /// A view F11 opened fullscreen stays one F11 closes only while it is fullscreen: left
+    /// another way, it is the view in the window, and F11 is its fullscreen switch again.
+    #[test]
+    fn leaving_fullscreen_forgets_the_key_opened_it() {
+        let mut fs = State::entering(true, true, false, false);
+        fs.window_toggled(true);
+        fs.from_key = true;
+        fs.window_toggled(false);
+        assert!(fs.open && !fs.from_key);
+    }
+
+    /// F11 inside the view: going fullscreen hands the view the leaving, even when the window
+    /// was fullscreen before it opened; coming out leaves it nothing to undo.
+    #[test]
+    fn toggling_the_window_moves_who_leaves_fullscreen() {
+        let mut fs = State::entering(true, false, false, true);
+        fs.window_toggled(true);
+        assert!(fs.open && fs.manages_window && !fs.window_was_fullscreen);
+        assert!(fs.grace_until > Instant::now());
+        fs.window_toggled(false);
+        assert!(fs.open && !fs.manages_window && !fs.window_was_fullscreen);
+    }
+
     fn screen(w: f32, h: f32) -> Rect {
         Rect::from_min_size(pos2(0.0, 0.0), vec2(w, h))
     }
 
-    fn lay(w: f32, h: f32, region: bool, reserve: f32, wide: bool) -> Layout {
-        layout(
-            screen(w, h),
-            &Metrics::new(screen(w, h)),
-            region,
-            reserve,
-            wide,
-        )
+    fn lay(w: f32, h: f32, region: bool, wide: bool) -> Layout {
+        layout(screen(w, h), &Metrics::new(screen(w, h)), region, wide)
     }
 
     #[test]
@@ -1162,7 +1782,7 @@ mod tests {
     /// cover is centred and there is no region.
     #[test]
     fn the_cover_and_the_lyrics_share_the_screen() {
-        let wide = lay(1920.0, 1080.0, true, 0.0, false);
+        let wide = lay(1920.0, 1080.0, true, false);
         let (cover, region) = (wide.cover.unwrap(), wide.region.unwrap());
         assert!(cover.right() < region.left());
         assert!(cover.width() <= 560.0 && (cover.width() - cover.height()).abs() < 0.01);
@@ -1171,7 +1791,7 @@ mod tests {
         // words.
         assert!((cover.left() - (1920.0 - region.right())).abs() < 0.01);
 
-        let alone = lay(1920.0, 1080.0, false, 0.0, false);
+        let alone = lay(1920.0, 1080.0, false, false);
         assert!(alone.region.is_none());
         assert!((alone.cover.unwrap().center().x - 960.0).abs() < 0.01);
         assert!(alone.centred);
@@ -1180,7 +1800,7 @@ mod tests {
     /// A narrow landscape window gives the lyrics everything rather than squeezing a cover in.
     #[test]
     fn a_narrow_window_drops_the_cover_for_the_lyrics() {
-        let narrow = lay(320.0, 300.0, true, 0.0, false);
+        let narrow = lay(320.0, 300.0, true, false);
         assert!(narrow.cover.is_none() && narrow.info.is_none());
         assert!(narrow.region.is_some());
     }
@@ -1191,7 +1811,7 @@ mod tests {
     fn a_vertical_screen_stacks_the_cover_over_the_lyrics() {
         for (w, h) in [(1080.0, 1920.0), (800.0, 1400.0)] {
             let m = Metrics::new(screen(w, h));
-            let l = lay(w, h, true, 0.0, false);
+            let l = lay(w, h, true, false);
             let (cover, info, region) = (l.cover.unwrap(), l.info.unwrap(), l.region.unwrap());
             assert!(cover.bottom() <= info.top(), "{w}x{h}");
             assert!(info.bottom() <= region.top(), "{w}x{h}");
@@ -1203,55 +1823,10 @@ mod tests {
         }
     }
 
-    /// The block and the open drawer are one group centred on the screen: the drawer's margin on
-    /// the right is the block's on the left, with the room the layout set aside between them,
-    /// with or without lyrics, and the drawer starts fully off screen.
-    #[test]
-    fn the_open_drawer_is_symmetrical_with_the_block() {
-        for (w, h) in [
-            (1920.0, 1080.0),
-            (2560.0, 1440.0),
-            (1366.0, 768.0),
-            (1100.0, 720.0),
-        ] {
-            let screen = screen(w, h);
-            let m = Metrics::new(screen);
-            let room = m.drawer_w + m.drawer_gap;
-            for with_region in [true, false] {
-                let open = layout(screen, &m, with_region, room, false);
-                let (rect, offset) = drawer_placement(screen, &m, &open, 1.0);
-                assert_eq!(offset, egui::Vec2::ZERO);
-                let block_left = open
-                    .cover
-                    .map(|c| c.left())
-                    .or_else(|| open.region.map(|r| r.left()))
-                    .unwrap();
-                assert!(
-                    ((w - rect.right()) - (block_left - screen.left())).abs() < 0.5,
-                    "{w}x{h} region {with_region}: margins differ"
-                );
-                let block_right = open
-                    .region
-                    .map(|r| r.right())
-                    .or_else(|| open.cover.map(|c| c.right()))
-                    .unwrap();
-                assert!(
-                    rect.left() >= block_right + m.drawer_gap - 0.5,
-                    "{w}x{h} region {with_region}: the drawer crowds the block"
-                );
-                let (rect, offset) = drawer_placement(screen, &m, &open, 0.0);
-                assert!(
-                    rect.left() + offset.x >= screen.right() - 0.5,
-                    "starts on screen"
-                );
-            }
-        }
-    }
-
     /// A vertical window too short to hold both gives the words the whole space.
     #[test]
     fn a_short_vertical_window_lets_the_cover_step_aside() {
-        let l = lay(300.0, 320.0, true, 0.0, false);
+        let l = lay(300.0, 320.0, true, false);
         assert!(l.cover.is_none() && l.region.is_some());
     }
 
@@ -1259,7 +1834,7 @@ mod tests {
     #[test]
     fn a_vertical_cover_alone_fills_the_width() {
         let m = Metrics::new(screen(1080.0, 1920.0));
-        let l = lay(1080.0, 1920.0, false, 0.0, false);
+        let l = lay(1080.0, 1920.0, false, false);
         let cover = l.cover.unwrap();
         assert!((cover.width() - (1080.0 - 2.0 * m.margin)).abs() < 0.01);
     }
@@ -1268,7 +1843,7 @@ mod tests {
     #[test]
     fn a_short_window_keeps_the_cover_clear_of_the_controls() {
         let m = Metrics::new(screen(1280.0, 520.0));
-        let l = lay(1280.0, 520.0, false, 0.0, false);
+        let l = lay(1280.0, 520.0, false, false);
         assert!(l.info.unwrap().bottom() <= 520.0 - m.bottom_band + 1.0);
     }
 
@@ -1281,7 +1856,7 @@ mod tests {
             (1080.0, 1920.0, true),
             (1080.0, 1920.0, false),
         ] {
-            let l = lay(w, h, region, 0.0, true);
+            let l = lay(w, h, region, true);
             let cover = l.cover.unwrap();
             assert!(
                 (cover.width() / cover.height() - 16.0 / 9.0).abs() < 0.01,
@@ -1291,24 +1866,10 @@ mod tests {
         }
     }
 
-    /// The drawer's reserved room squeezes the block from the right and keeps it centred in
-    /// what is left.
-    #[test]
-    fn an_open_drawer_squeezes_the_block_and_recentres_it() {
-        let m = Metrics::new(screen(1920.0, 1080.0));
-        let reserve = m.drawer_w + m.drawer_gap;
-        let l = lay(1920.0, 1080.0, true, reserve, false);
-        let (cover, region) = (l.cover.unwrap(), l.region.unwrap());
-        assert!(region.right() <= 1920.0 - m.margin - reserve + 0.01);
-        assert!(
-            (cover.left() - m.margin - (1920.0 - m.margin - reserve - region.right())).abs() < 0.01
-        );
-    }
-
     #[test]
     fn the_layout_glides_between_its_two_states() {
-        let a = lay(1920.0, 1080.0, false, 0.0, false);
-        let b = lay(1920.0, 1080.0, true, 0.0, false);
+        let a = lay(1920.0, 1080.0, false, false);
+        let b = lay(1920.0, 1080.0, true, false);
         let at = |t| Layout::lerp(&a, &b, t).cover.unwrap();
         assert_eq!(at(0.0), a.cover.unwrap());
         assert_eq!(at(1.0), b.cover.unwrap());

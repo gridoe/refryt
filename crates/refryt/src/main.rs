@@ -197,6 +197,11 @@ fn main() -> eframe::Result {
     if args.iter().any(|a| a == "--maximized") {
         viewport = viewport.with_maximized(true);
     }
+    // Another: open fullscreen, which with `--now-playing` shows the view as F11 leaves it. The
+    // window is not taken back out, as the open view counts as having put it there.
+    if args.iter().any(|a| a == "--fullscreen") {
+        viewport = viewport.with_fullscreen(true);
+    }
     if in_app_bundle() {
         // macOS: the bundle has its own icon, built for the Dock's light, dark, clear and tinted
         // looks (`scripts/build-macos.sh`). An icon set at runtime replaces it with the flat logo

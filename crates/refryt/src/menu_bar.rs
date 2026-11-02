@@ -43,13 +43,14 @@ pub enum Command {
     Queue,
     Lyrics,
     FullscreenPlayer,
+    WindowFullscreen,
     Settings,
     Shortcuts,
     Website,
 }
 
 impl Command {
-    const ALL: [Command; 19] = [
+    const ALL: [Command; 20] = [
         Command::PlayPause,
         Command::Next,
         Command::Previous,
@@ -66,6 +67,7 @@ impl Command {
         Command::Queue,
         Command::Lyrics,
         Command::FullscreenPlayer,
+        Command::WindowFullscreen,
         Command::Settings,
         Command::Shortcuts,
         Command::Website,
@@ -90,6 +92,7 @@ impl Command {
             Command::Queue => "ytm-menu-queue",
             Command::Lyrics => "ytm-menu-lyrics",
             Command::FullscreenPlayer => "ytm-menu-fullscreen-player",
+            Command::WindowFullscreen => "ytm-menu-window-fullscreen",
             Command::Settings => "ytm-menu-settings",
             Command::Shortcuts => "ytm-menu-shortcuts",
             Command::Website => "ytm-menu-website",
@@ -152,6 +155,8 @@ pub struct State {
     pub queue_open: bool,
     pub lyrics_open: bool,
     pub fullscreen_player: bool,
+    /// The window is fullscreen, by any means.
+    pub window_fullscreen: bool,
     pub signed_in: bool,
     /// A text field has the keyboard. ⌘← ⌘→ ⌘↑ ⌘↓ move the caret there, so the items holding
     /// those shortcuts are disabled until typing stops.
@@ -174,6 +179,7 @@ pub struct MenuBar {
     queue: CheckMenuItem,
     lyrics: CheckMenuItem,
     fullscreen_player: MenuItem,
+    window_fullscreen: MenuItem,
     shown: Option<State>,
 }
 
@@ -258,6 +264,22 @@ impl MenuBar {
         let queue = check(Command::Queue, "Show Queue", None);
         let lyrics = check(Command::Lyrics, "Show Lyrics", None);
         let fullscreen_player = item(Command::FullscreenPlayer, "Now Playing", None);
+        // Our own item rather than AppKit's: AppKit's takes the window to a Space of its own,
+        // black behind a see-through window, where everything else in the app uses the simple
+        // fullscreen of `window_fullscreen`. ⌃⌘F, as in every Mac app.
+        let window_fullscreen = item(
+            Command::WindowFullscreen,
+            "Enter Full Screen",
+            Some(Accelerator::new(
+                Modifiers::CONTROL | Modifiers::META,
+                Code::KeyF,
+            )),
+        );
+        // With an item of our own, AppKit would add its own Enter Full Screen beside it.
+        objc2_foundation::NSUserDefaults::standardUserDefaults().setBool_forKey(
+            false,
+            objc2_foundation::ns_string!("NSFullScreenMenuItemEverywhere"),
+        );
         let view = Submenu::with_items(
             "View",
             true,
@@ -273,7 +295,7 @@ impl MenuBar {
                 &lyrics,
                 &fullscreen_player,
                 &separator(),
-                &PredefinedMenuItem::fullscreen(Some("Enter Full Screen")),
+                &window_fullscreen,
             ],
         )
         .ok()?;
@@ -321,6 +343,7 @@ impl MenuBar {
             queue,
             lyrics,
             fullscreen_player,
+            window_fullscreen,
             shown: None,
         })
     }
@@ -371,6 +394,13 @@ impl MenuBar {
                 "Close Now Playing"
             } else {
                 "Now Playing"
+            });
+        }
+        if changed(|s| s.window_fullscreen) {
+            self.window_fullscreen.set_text(if state.window_fullscreen {
+                "Exit Full Screen"
+            } else {
+                "Enter Full Screen"
             });
         }
         self.shown = Some(state);

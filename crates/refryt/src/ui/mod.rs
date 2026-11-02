@@ -3336,6 +3336,15 @@ pub(crate) mod tips {
     pub(crate) const LYRICS: &str = "Lyrics";
     pub(crate) const HISTORY: &str = "History";
     pub(crate) const EXIT_FULLSCREEN: &str = "Exit fullscreen (Esc)";
+    pub(crate) const CLOSE_PLAYER: &str = "Close player (Esc)";
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) const FULLSCREEN: &str = "Fullscreen (F11)";
+    #[cfg(not(target_os = "macos"))]
+    pub(crate) const LEAVE_FULLSCREEN: &str = "Leave fullscreen (F11)";
+    #[cfg(target_os = "macos")]
+    pub(crate) const FULLSCREEN: &str = "Fullscreen (⌃⌘F)";
+    #[cfg(target_os = "macos")]
+    pub(crate) const LEAVE_FULLSCREEN: &str = "Leave fullscreen (⌃⌘F)";
 }
 
 #[cfg(test)]
