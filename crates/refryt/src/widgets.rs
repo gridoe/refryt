@@ -4946,6 +4946,12 @@ impl Group<'_> {
 }
 
 /// A card of settings under a small caption. `contents` adds its rows through the [`Group`].
+/// The fill of a group of settings or a tile: between the page and a chip's own fill, so an
+/// unselected chip still shows on it.
+pub fn group_fill(palette: &Palette) -> Color32 {
+    palette.glass(mix(palette.panel, palette.surface, 0.4))
+}
+
 pub fn setting_group(
     ui: &mut Ui,
     palette: &Palette,
@@ -4963,8 +4969,7 @@ pub fn setting_group(
     }
     let inner = ui.available_width() - 32.0;
     egui::Frame::NONE
-        // Between the page and a chip's own fill, so an unselected chip still shows on it.
-        .fill(palette.glass(mix(palette.panel, palette.surface, 0.4)))
+        .fill(group_fill(palette))
         .corner_radius(CornerRadius::same(theme::radii().popup))
         .inner_margin(egui::Margin::symmetric(16, 0))
         .show(ui, |ui| {

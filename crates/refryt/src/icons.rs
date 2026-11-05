@@ -27,6 +27,7 @@ icons! {
     CircleUser => "circle-user",
     Bookmark => "bookmark",
     CircleAlert => "circle-alert",
+    ChartColumn => "chart-column",
     Disc3 => "disc-3",
     Download => "download",
     Ellipsis => "ellipsis",

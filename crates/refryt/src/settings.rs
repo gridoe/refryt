@@ -269,6 +269,8 @@ pub struct Settings {
     /// Colour an album or playlist header and the now-playing view from the cover: its main
     /// colour with the blurred cover in it. Off leaves the app's own colours.
     pub adaptive_art_color: bool,
+    /// Keep a log of the songs you listen to on this machine, for the Stats page.
+    pub listening_stats: bool,
     /// What the resolver asks for.
     pub quality: Quality,
     /// Keep playing related songs when a hand-picked queue nears its end. YouTube's own radio,
@@ -364,6 +366,7 @@ impl Default for Settings {
             compositor_corners: false,
             scroll_fades: false,
             adaptive_art_color: true,
+            listening_stats: true,
             quality: Quality::default(),
             autoplay: true,
             queue_click_keeps_order: false,
@@ -599,6 +602,16 @@ mod tests {
         // An integer is a number too.
         let zero: Settings = serde_json::from_str(r#"{"opacity":0}"#).unwrap();
         assert_eq!(zero.opacity, Opacity::OFF);
+    }
+
+    /// Stats start working by themselves, for a new install and an older settings file alike.
+    #[test]
+    fn listening_stats_are_on_until_turned_off() {
+        assert!(Settings::default().listening_stats);
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.listening_stats);
+        let off: Settings = serde_json::from_str(r#"{"listening_stats":false}"#).unwrap();
+        assert!(!off.listening_stats);
     }
 
     /// Strict Home order is opt-in: off for a new install and for a file from before it existed,

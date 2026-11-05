@@ -13,6 +13,7 @@ pub mod history;
 pub mod home;
 pub mod home_order;
 pub mod library;
+pub mod listening;
 pub mod lyrics;
 pub mod mood;
 pub mod moods;
@@ -3002,6 +3003,21 @@ pub(crate) fn entry_row_spec<'a>(
 /// shelves want this even for a shelf that is entirely songs, unlike Home/Explore's shelves,
 /// which render every kind as cards.
 pub(crate) fn entry_rows(app: &mut crate::app::App, ui: &mut egui::Ui, items: &[Entry]) {
+    entry_rows_with(app, ui, items, &[]);
+}
+
+/// [`entry_rows`] with each row's place in the list where its number would go.
+pub(crate) fn ranked_entry_rows(app: &mut crate::app::App, ui: &mut egui::Ui, items: &[Entry]) {
+    let ranks: Vec<String> = (1..=items.len()).map(|n| n.to_string()).collect();
+    entry_rows_with(app, ui, items, &ranks);
+}
+
+fn entry_rows_with(
+    app: &mut crate::app::App,
+    ui: &mut egui::Ui,
+    items: &[Entry],
+    ranks: &[String],
+) {
     let signed_in = app.signed_in();
     let clicked = {
         let crate::app::App {
@@ -3022,7 +3038,13 @@ pub(crate) fn entry_rows(app: &mut crate::app::App, ui: &mut egui::Ui, items: &[
             stats,
             liked,
             items.len(),
-            |i| entry_row_spec(&items[i], now, library, signed_in),
+            |i| {
+                let mut spec = entry_row_spec(&items[i], now, library, signed_in);
+                if let Some(rank) = ranks.get(i) {
+                    spec.rank = Some(rank);
+                }
+                spec
+            },
         )
     };
     if let Some(action) = clicked.action {
@@ -3035,6 +3057,8 @@ pub(crate) fn entry_rows(app: &mut crate::app::App, ui: &mut egui::Ui, items: &[
                     app.play_row(playable_queue(items), index);
                 }
             }
+            // Stats knows some artists only by name, from a file's tags.
+            Entry::Artist(a) if a.id.is_empty() => app.search_again(a.name.clone()),
             Entry::Artist(a) => app.navigate(Route::Artist(a.id.clone())),
             Entry::Album(a) => app.navigate(Route::Album(a.id.clone())),
             Entry::Playlist(p) => app.navigate(Route::Playlist(p.id.clone())),
@@ -3495,6 +3519,7 @@ pub(crate) mod tips {
     pub(crate) const QUEUE: &str = "Queue";
     pub(crate) const LYRICS: &str = "Lyrics";
     pub(crate) const HISTORY: &str = "History";
+    pub(crate) const STATS: &str = "Stats";
     pub(crate) const EXIT_FULLSCREEN: &str = "Exit fullscreen (Esc)";
     pub(crate) const CLOSE_PLAYER: &str = "Close player (Esc)";
     #[cfg(not(target_os = "macos"))]

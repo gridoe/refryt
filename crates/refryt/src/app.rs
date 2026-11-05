@@ -496,6 +496,8 @@ pub enum Route {
     Moods,
     /// What you played, in dated shelves. Signed in only.
     History,
+    /// What you've been listening to, from the log kept on this machine.
+    Stats,
     Library,
     Settings,
     Artist(String),
@@ -527,6 +529,7 @@ impl Route {
             "charts" => Some(Route::Charts(None)),
             "moods" => Some(Route::Moods),
             "history" => Some(Route::History),
+            "stats" => Some(Route::Stats),
             "library" => Some(Route::Library),
             "settings" => Some(Route::Settings),
             other => match other.split_once(':') {
@@ -1446,6 +1449,23 @@ pub struct App {
     pub(crate) suggestion_cursor: Option<usize>,
     /// What was searched before, offered by the search box while it is focused and empty.
     pub(crate) search_history: crate::search_history::SearchHistory,
+    /// The song being listened to, on its way to the play log.
+    listening: crate::play_log::Listening,
+    /// The range the Stats page shows.
+    pub(crate) stats_range: crate::listening_stats::StatsRange,
+    /// What the Stats page shows. An older report stays up while a newer one is added up.
+    pub(crate) stats_report: Option<Arc<crate::listening_stats::Report>>,
+    pub(crate) stats_error: Option<String>,
+    /// Which report is wanted: bumped by a new range and a new play.
+    stats_epoch: u64,
+    /// The last report asked for.
+    stats_requested: Option<u64>,
+    /// Which of the Stats page's top lists are open past their first rows.
+    pub(crate) stats_expanded: [bool; 3],
+    /// Settings' Delete stats has been pressed once, and is asking to be sure.
+    pub(crate) stats_delete_armed: bool,
+    /// An artist's id and how many times you've played them, for their page.
+    pub(crate) artist_plays: Option<(String, u64)>,
     /// Escape closed the recent-searches list. Without this it would reopen on the next frame,
     /// the box still being focused and empty; typing or refocusing clears it.
     pub(crate) recent_dismissed: bool,
@@ -1514,7 +1534,7 @@ pub struct App {
     pub(crate) artist: Option<crate::model::Artist>,
     pub(crate) artist_loading: bool,
     pub(crate) artist_error: Option<String>,
-    artist_for: Option<String>,
+    pub(crate) artist_for: Option<String>,
     /// The album page being shown.
     pub(crate) album: Option<crate::model::Album>,
     pub(crate) album_loading: bool,
@@ -2086,6 +2106,15 @@ impl App {
             suggestions_for: None,
             suggestion_cursor: None,
             search_history: crate::search_history::load(),
+            listening: Default::default(),
+            stats_range: Default::default(),
+            stats_report: None,
+            stats_error: None,
+            stats_epoch: 0,
+            stats_requested: None,
+            stats_expanded: [false; 3],
+            stats_delete_armed: false,
+            artist_plays: None,
             recent_dismissed: false,
             pending_search: search.is_some(),
             searched: String::new(),
@@ -3117,6 +3146,14 @@ impl App {
         // loaded, paused or seeked is read here, a frame later.
         let state = self.read_player_state();
         self.player_state = state;
+        let done = self.listening.observe(
+            state.position,
+            state.duration,
+            state.paused,
+            state.idle,
+            unix_now(),
+        );
+        self.log_play(done);
         // Kept in sync here rather than at every `toggle_pause`/`set_paused` call site — mpv is
         // the single source of truth for this, and every row/card's play-vs-pause glyph reads
         // it off `now` rather than reaching for the player directly.
@@ -3605,6 +3642,7 @@ impl App {
             Route::Charts(params) => self.load_charts(params),
             Route::Moods => self.load_moods(),
             Route::History => self.load_history(),
+            Route::Stats => self.load_stats(),
             Route::Search | Route::Settings => {}
         }
     }
@@ -3615,6 +3653,8 @@ impl App {
         if self.artist_for.as_deref() == Some(id.as_str()) {
             return;
         }
+        self.artist_plays = None;
+        self.backend.count_artist_plays(id.clone());
         self.artist = None;
         self.artist_error = None;
         self.artist_loading = true;
@@ -3991,6 +4031,10 @@ impl App {
     /// lands at the failed attempt's offset.
     pub(crate) fn retry_route(&mut self) {
         match self.current_route() {
+            Route::Stats => {
+                self.stats_error = None;
+                self.stats_epoch += 1;
+            }
             Route::Artist(_) | Route::ArtistLiked(_) => {
                 self.artist_for = None;
                 self.artist_error = None;
@@ -5439,6 +5483,17 @@ impl App {
                 // A reply for a History visit since superseded: dropped, so a slow fetch cannot
                 // overwrite a newer one's shelves.
                 Event::HistoryLoaded { .. } | Event::HistoryFailed { .. } => {}
+                Event::StatsLoaded { report, epoch } if epoch == self.stats_epoch => {
+                    self.stats_report = Some(report);
+                    self.stats_error = None;
+                }
+                Event::StatsFailed { error, epoch } if epoch == self.stats_epoch => {
+                    self.stats_error = Some(error);
+                }
+                Event::StatsLoaded { .. } | Event::StatsFailed { .. } => {}
+                Event::ArtistPlaysCounted { id, plays } => {
+                    self.artist_plays = Some((id, plays));
+                }
                 Event::PlaylistCreated { title } => {
                     self.toast(&format!("Created “{title}”"));
                     // The rail lists what the library holds, so it has to be asked again before
@@ -5698,6 +5753,8 @@ impl App {
                 Event::Resolving(..) => {}
                 Event::Playing(mut track, generation) if generation == self.play_generation => {
                     self.reconcile_state(&mut track);
+                    let done = self.listening.started(&track, unix_now());
+                    self.log_play(done);
                     let video_id = track.video_id.clone();
                     let wide = track.wide;
                     self.now = NowPlaying {
@@ -7181,6 +7238,56 @@ impl App {
         self.backend.fetch_history(self.history_epoch);
     }
 
+    /// Ask for the Stats page's report, unless it is the one already asked for.
+    fn load_stats(&mut self) {
+        if self.stats_requested == Some(self.stats_epoch) || self.stats_error.is_some() {
+            return;
+        }
+        self.stats_requested = Some(self.stats_epoch);
+        self.backend
+            .load_listening_stats(self.stats_range, self.stats_epoch);
+    }
+
+    /// Show another range on the Stats page.
+    pub(crate) fn set_stats_range(&mut self, range: crate::listening_stats::StatsRange) {
+        if self.stats_range != range {
+            self.stats_range = range;
+            self.stats_error = None;
+            self.stats_expanded = [false; 3];
+            self.stats_epoch += 1;
+        }
+    }
+
+    /// Forget every play, from Settings once it has asked twice.
+    pub(crate) fn delete_stats(&mut self) {
+        self.stats_delete_armed = false;
+        match crate::play_log::delete() {
+            Ok(()) => {
+                self.listening = Default::default();
+                self.artist_plays = None;
+                self.stats_report = None;
+                self.stats_epoch += 1;
+                self.toast("Deleted your stats");
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "could not delete the play log");
+                self.toast_error("Could not delete your stats");
+            }
+        }
+    }
+
+    /// A listen has ended that counts, if `play` says so.
+    fn log_play(&mut self, play: Option<crate::play_log::Play>) {
+        let Some(play) = play.filter(|_| self.settings.listening_stats) else {
+            return;
+        };
+        if let Err(e) = crate::play_log::append(&play) {
+            tracing::warn!(error = %format!("{e:#}"), "could not add to the play log");
+            return;
+        }
+        self.stats_epoch += 1;
+    }
+
     /// Make a new playlist on your account and show it in the rail.
     pub(crate) fn create_playlist(&mut self, title: String) {
         if !self.signed_in() {
@@ -7948,6 +8055,12 @@ fn scripted_input(raw_input: &mut egui::RawInput) {
 }
 
 impl eframe::App for App {
+    /// The song playing as the app closes still counts.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let done = self.listening.finish();
+        self.log_play(done);
+    }
+
     /// eframe calls this periodically and on exit, so the queue survives a normal close as well
     /// as the five-second periodic save.
     ///
@@ -8405,6 +8518,7 @@ impl eframe::App for App {
                             Route::Moods => ui::moods::page(self, ui),
                             Route::HomeShelf(title) => ui::home::shelf_page(self, ui, &title),
                             Route::History => ui::history::page(self, ui),
+                            Route::Stats => ui::listening::page(self, ui),
                             Route::Home => ui::home::page(self, ui),
                             Route::Library => ui::library::page(self, ui),
                             Route::Settings => ui::settings::page(self, ui),

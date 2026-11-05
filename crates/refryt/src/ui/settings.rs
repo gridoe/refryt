@@ -562,10 +562,42 @@ fn playback(app: &mut App, ui: &mut egui::Ui) {
 /// How songs, playlists and Home behave, and where local music is read from.
 fn library(app: &mut App, ui: &mut egui::Ui) {
     let p = app.palette;
+    let mut listening_stats = app.settings.listening_stats;
+    let mut armed = app.stats_delete_armed;
+    let mut delete_stats = false;
     let mut double_click = app.settings.double_click_to_play;
     let mut title_album = app.settings.title_opens_album;
     let mut playlist_sort = app.settings.playlist_default_sort;
     let mut open_order = false;
+
+    widgets::setting_group(ui, &p, Some("Listening stats"), |ui, g| {
+        toggle_row(
+            g,
+            ui,
+            &p,
+            "setting-listening-stats",
+            "Keep listening stats",
+            "Logs the songs you listen to on this computer for the Stats page. Nothing is sent anywhere.",
+            &mut listening_stats,
+        );
+        let detail = if armed {
+            "This removes every play and can't be undone."
+        } else {
+            "Removes every play kept on this computer."
+        };
+        g.row(ui, "Delete stats", detail, |ui| {
+            if armed {
+                if widgets::outline_button(ui, &p, "Cancel").clicked() {
+                    armed = false;
+                }
+                if widgets::pill_button(ui, &p, "Delete").clicked() {
+                    delete_stats = true;
+                }
+            } else if widgets::outline_button(ui, &p, "Delete").clicked() {
+                armed = true;
+            }
+        });
+    });
 
     widgets::setting_group(ui, &p, Some("Songs and playlists"), |ui, g| {
         toggle_row(
@@ -633,7 +665,12 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let ctx = ui.ctx().clone();
+    app.stats_delete_armed = armed;
+    if delete_stats {
+        app.delete_stats();
+    }
     app.update_settings(&ctx, |s| {
+        s.listening_stats = listening_stats;
         s.double_click_to_play = double_click;
         s.title_opens_album = title_album;
         s.playlist_default_sort = playlist_sort;

@@ -36,6 +36,7 @@ pub mod instance;
 #[cfg(target_os = "linux")]
 pub mod kwin;
 pub mod liked;
+pub mod listening_stats;
 pub mod local;
 pub mod local_playlists;
 pub mod media;
@@ -46,6 +47,7 @@ pub mod menu_bar;
 pub mod model;
 pub mod pacing;
 pub mod persist;
+pub mod play_log;
 pub mod playback;
 pub mod player;
 pub mod queue;

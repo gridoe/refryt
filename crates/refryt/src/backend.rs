@@ -257,6 +257,19 @@ pub enum Event {
         error: String,
         epoch: u64,
     },
+    StatsLoaded {
+        report: Arc<crate::listening_stats::Report>,
+        /// The request this answers; a reply to an older one is stale.
+        epoch: u64,
+    },
+    StatsFailed {
+        error: String,
+        epoch: u64,
+    },
+    ArtistPlaysCounted {
+        id: String,
+        plays: u64,
+    },
     PlaylistCreated {
         title: String,
     },
@@ -1699,6 +1712,34 @@ impl Backend {
             };
             Self::emit(&tx, &ctx, event);
         });
+    }
+
+    /// Add up the play log for a range, off the UI thread. `epoch` comes back with the answer.
+    pub fn load_listening_stats(&self, range: crate::listening_stats::StatsRange, epoch: u64) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let event = match crate::listening_stats::load(range) {
+                Ok(report) => Event::StatsLoaded {
+                    report: Arc::new(report),
+                    epoch,
+                },
+                Err(e) => Event::StatsFailed {
+                    error: format!("{e:#}"),
+                    epoch,
+                },
+            };
+            Self::emit(&tx, &ctx, event);
+        });
+    }
+
+    /// How many times an artist has been played, for their page.
+    pub fn count_artist_plays(&self, id: String) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.rt
+            .spawn_blocking(move || match crate::listening_stats::artist_plays(&id) {
+                Ok(plays) => Self::emit(&tx, &ctx, Event::ArtistPlaysCounted { id, plays }),
+                Err(e) => debug!(error = %format!("{e:#}"), "could not read the play log"),
+            });
     }
 
     /// What you played, in dated shelves. Signed in only — the page gates, not the call.

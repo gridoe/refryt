@@ -74,6 +74,12 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
     {
         app.navigate(Route::History);
     }
+    if widgets::icon_button(&mut right, &p, Icon::ChartColumn, 18.0, false)
+        .hint(crate::ui::tips::STATS)
+        .clicked()
+    {
+        app.navigate(Route::Stats);
+    }
     // Whatever the right group took, plus a gap so the search never touches it.
     let reserved = (rect.right() - right.min_rect().left()).max(0.0) + RIGHT_GAP;
 
