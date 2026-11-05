@@ -266,8 +266,8 @@ pub struct Settings {
     /// fullscreen player, which always fades). Off by default; it is worth most on a see-through
     /// window, where a list otherwise stops at a hard line over the desktop.
     pub scroll_fades: bool,
-    /// Tint an album/playlist header with a colour pulled from its own cover art, instead of
-    /// the scheme's fixed accent. Off falls back to the accent everywhere, unconditionally.
+    /// Colour an album or playlist header and the now-playing view from the cover: its main
+    /// colour with the blurred cover in it. Off leaves the app's own colours.
     pub adaptive_art_color: bool,
     /// What the resolver asks for.
     pub quality: Quality,

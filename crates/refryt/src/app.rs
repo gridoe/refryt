@@ -2383,7 +2383,11 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
             self.fullscreen_key(ctx);
         }
-        if self.fs.open && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // An open menu takes Esc for itself.
+        if self.fs.open
+            && !egui::Popup::is_any_open(ctx)
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
             // The queue is part of how the view was left, so Esc closes the view, queue and all.
             self.fs_exit(ctx);
         }
@@ -8078,6 +8082,7 @@ impl eframe::App for App {
         // logical-pixel space, which is what a Wayland surface's local coordinates are.
         let size = ctx.content_rect().size();
         // Windows tints its acrylic light unless the window says it is dark; a no-op elsewhere.
+        ui::fullscreen::prepare(self, &ctx);
         self.blur.set_dark(p.dark);
         self.blur.set(
             self.settings.blur && p.translucent(),

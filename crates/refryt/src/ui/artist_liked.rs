@@ -63,10 +63,11 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let covers = covers(&tracks);
-    let wash = crate::ui::header_wash_colour(app, covers.first());
+    let tint = crate::ui::header_tint(app, &ui.ctx().clone(), covers.first());
     crate::ui::page_scroll(app, "artist-liked").show(ui, |ui| {
         // Tinted from the songs' own covers, as a playlist's header is from its art.
-        crate::ui::header_wash(ui, &app.palette, app.content_rect, ui.cursor().min.y, wash);
+        let top = ui.cursor().min.y;
+        crate::ui::header_wash(ui, &app.palette, app.content_rect, top, &tint);
         header(app, ui, &tracks, &covers);
         ui.add_space(10.0);
         track_list(app, ui, &tracks);

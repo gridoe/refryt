@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, CornerRadius, Id, Rect, Sense, UiBuilder, pos2, vec2};
 
-use crate::app::{App, RepeatMode};
+use crate::app::{App, RepeatMode, Route};
 use crate::icons::Icon;
 use crate::model::LikeStatus;
 use crate::theme;
@@ -120,6 +120,14 @@ pub struct State {
     /// Opened straight into fullscreen by F11, so F11 again goes back to the app rather than
     /// to the view in the window. Cleared once the window leaves fullscreen any other way.
     pub from_key: bool,
+    /// Which of the two layouts is showing, through the window's change between them.
+    pub frame: WindowFrame,
+    /// The song the queue was last drawn under, while it is up.
+    queue_song: Option<String>,
+    /// The blurred cover behind everything, through a change of song.
+    pub backdrop: Backdrop,
+    /// The colour the background is washing toward.
+    tint: Option<Color32>,
     /// The layout this frame holds only one of lyrics and queue: a vertical screen, where the
     /// queue is a sheet in the lyrics' place, or one too narrow for them side by side. Written by
     /// [`view`].
@@ -166,6 +174,10 @@ impl Default for State {
             queue: false,
             queue_last: false,
             from_key: false,
+            frame: WindowFrame::default(),
+            queue_song: None,
+            backdrop: Backdrop::default(),
+            tint: None,
             exclusive: false,
             last_motion: now,
             manages_window: false,
@@ -417,9 +429,13 @@ pub(crate) fn layout(screen: Rect, m: &Metrics, with_region: bool, wide: bool) -
         let top = content.center().y - (ch + gap + m.info_h) / 2.0;
         let cover = Rect::from_min_size(pos2(left, top), vec2(cw, ch));
         let info = Rect::from_min_size(pos2(left, cover.bottom() + gap), vec2(cw, m.info_h));
-        let region = Rect::from_min_max(
-            pos2(left + cw + m.column_gap, content.top()),
-            pos2(left + cw + m.column_gap + words, content.bottom()),
+        // The column lines up with the cover and name beside it. Under a video, which is short,
+        // it keeps room to read, centred on them.
+        let block = Rect::from_min_max(cover.min, info.max);
+        let height = block.height().max(content.height() * 0.6);
+        let region = Rect::from_center_size(
+            pos2(left + cw + m.column_gap + words / 2.0, block.center().y),
+            vec2(words, height),
         );
         return Layout {
             cover: Some(cover),
@@ -453,9 +469,9 @@ pub(crate) fn layout(screen: Rect, m: &Metrics, with_region: bool, wide: bool) -
 /// The layout with the queue open on a landscape screen: the left-hand column holds the cover
 /// and the song's name at its head and the queue under them ([`drawer_split`]), and the lyrics
 /// keep their place on the right, so opening the queue moves nothing but the cover. The column
-/// is the cover's own width, laid out as [`layout`] lays out cover and lyrics. Without lyrics, or
-/// with too little room for them beside it, the column stands alone, centred. Returns the layout
-/// and the queue list's rect.
+/// is the cover's own width, laid out as [`layout`] lays out cover and lyrics. Without lyrics the
+/// queue is on the right instead, in their place. With too little room for two columns, the
+/// column stands alone, centred. Returns the layout and the queue list's rect.
 pub(crate) fn queue_layout(
     screen: Rect,
     m: &Metrics,
@@ -463,16 +479,27 @@ pub(crate) fn queue_layout(
     wide: bool,
 ) -> (Layout, Rect) {
     let content = content_rect(screen, m);
+    // No lyrics, with room for two columns: the queue takes their place on the right, and the
+    // cover stays where it is beside them.
+    if !with_region
+        && content.width() >= m.narrow
+        && let beside = layout(screen, m, true, wide)
+        && let Some(list) = beside.region
+    {
+        return (
+            Layout {
+                region: None,
+                ..beside
+            },
+            list,
+        );
+    }
     let beside = with_region && content.width() >= m.narrow;
     // Where the column is centred: on the closed cover, beside the lyrics, so the cover only
     // grows or shrinks in place; on the screen, alone.
     let (centre, room, region) = if beside {
-        let (left, cw, _, words) = side_by_side(content, m, wide);
-        let region = Rect::from_min_max(
-            pos2(left + cw + m.column_gap, content.top()),
-            pos2(left + cw + m.column_gap + words, content.bottom()),
-        );
-        (left + cw / 2.0, cw, Some(region))
+        let (left, cw, _, _) = side_by_side(content, m, wide);
+        (left + cw / 2.0, cw, layout(screen, m, true, wide).region)
     } else {
         let room = column_width(content, m).min(content.width());
         (content.center().x, room, None)
@@ -510,6 +537,11 @@ pub(crate) fn queue_layout(
     )
 }
 
+/// How wide the cover and the column beside it are together, where there are two.
+fn block_width(with: &Layout) -> Option<f32> {
+    Some(with.region?.right() - with.cover?.left())
+}
+
 /// Whether the controls are showing: while something just moved, while paused (a still screen
 /// with nothing to do should keep its buttons), or while the pointer is on them.
 pub(crate) fn controls_visible(since_motion: Duration, paused: bool, hovering: bool) -> bool {
@@ -544,12 +576,34 @@ pub(crate) fn lyrics_missing(for_current_song: bool, loading: bool, lines: Optio
 }
 
 pub fn view(app: &mut App, ui: &mut egui::Ui) {
+    let before = app.current_route();
+    draw(app, ui);
+    // A page can't show behind the view: whatever went somewhere (the title, an artist, a menu,
+    // a row in the queue), the view gets out of the way for it.
+    if app.current_route() != before {
+        let ctx = ui.ctx().clone();
+        app.fs_exit(&ctx);
+    }
+}
+
+fn draw(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let p = app.palette;
     let window = test_screen().unwrap_or_else(|| ctx.content_rect());
     // Kept in the window, the view takes the shell's shape: a title strip the height of the top
     // bar, over a card inset by the gutter as the page card is. Fullscreen, it is the screen.
-    let windowed = in_window(app, &ctx);
+    let was = app.fs.frame.shown;
+    let windowed = app
+        .fs
+        .frame
+        .step(in_window(&ctx), ctx.content_rect().size(), Instant::now());
+    if app.fs.frame.holding() {
+        ctx.request_repaint();
+    }
+    // The change is one jump, not a reason to glide.
+    if was.is_some_and(|was| was != windowed) {
+        ctx.clear_animations();
+    }
     let (screen, m, radius) = if windowed {
         let card = Rect::from_min_max(
             pos2(
@@ -588,17 +642,24 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let Some(track) = app.now.track.as_ref() else {
-        background(ui, &p, screen, p.accent, radius);
+        wash_background(ui, &p, screen, p.window, radius);
         return;
     };
     let art_url = track.thumbnail.clone();
-    let title = track.title.clone();
-    let credits = track.artist_line();
     let video_id = track.video_id.clone();
     let video = app.video_open && track.wide;
 
-    let tint = animated(&ctx, crate::ui::header_wash_colour(app, art_url.as_ref()));
-    background(ui, &p, screen, tint, radius);
+    // Starts from the window's own colour when the cover's isn't known yet, and through a change
+    // of song keeps the last one until the next is known, rather than something bright between.
+    let known = crate::ui::header_wash_colour(app, art_url.as_ref());
+    app.fs.tint = tint_target(app.fs.tint, art_url.is_some(), known);
+    let tint = animated(
+        &ctx,
+        app.fs.tint.unwrap_or(p.window),
+        if was.is_none() { 0.0 } else { TINT_SECS },
+    );
+    wash_background(ui, &p, screen, tint, radius);
+    paint_backdrop(app, ui, screen, radius, art_url.as_ref());
 
     // This view's own placeholders time themselves off the lyrics request, not off a page load
     // (the shell is not drawn, so nothing else is using the timer this frame).
@@ -661,11 +722,13 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
         let (open_with, list_with) = queue_layout(screen, &m, true, video);
         let open = Layout::lerp(&open_alone, &open_with, region_t);
         let lay = Layout::lerp(&closed, &open, queue_t);
-        // The name under the cover settles at the queue head's smaller size as the queue opens.
+        // The name settles at the queue head's smaller size only as the queue comes under the
+        // cover. With the queue on the right it stays the name beside the words would be.
         let small = drawer_type(&m);
+        let head_t = queue_t * region_t;
         let info_m = Metrics {
-            title: mix(m.title, small.title, queue_t),
-            credits: mix(m.credits, small.credits, queue_t),
+            title: mix(m.title, small.title, head_t),
+            credits: mix(m.credits, small.credits, head_t),
             ..m
         };
         // The lyrics keep their place beside the column; where there was no room for them beside
@@ -691,7 +754,11 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
             .translate(vec2(0.0, (1.0 - queue_t) * 24.0 * m.scale));
         (
             lay,
-            mix(closed_centre, 1.0, queue_t),
+            mix(
+                closed_centre,
+                mix(flag(open_alone.centred), 1.0, region_t),
+                queue_t,
+            ),
             info_m,
             region,
             alpha,
@@ -700,11 +767,41 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
         )
     };
 
-    if let Some(cover) = lay.cover {
-        paint_cover(app, ui, cover, art_url.as_ref(), video);
+    let cover_hit = lay
+        .cover
+        .map(|cover| paint_cover(app, ui, cover, art_url.as_ref(), video));
+    let song = lay
+        .info
+        .map(|info| info_text(app, ui, &info_m, info, centre_t));
+    let (menu, go) = match (cover_hit, song) {
+        (Some(cover), Some(song)) => (Some(cover.union(song.menu)), song.go),
+        (cover, song) => {
+            let go = song.as_ref().and_then(|s| s.go.clone());
+            (cover.or(song.map(|s| s.menu)), go)
+        }
+    };
+    if let Some(route) = go {
+        app.navigate(route);
     }
-    if let Some(info) = lay.info {
-        info_text(ui, &p, &info_m, info, &title, &credits, centre_t);
+    // The song's own menu, the one every row and the player bar has.
+    if let Some(menu) = menu
+        && let Some(track) = app.now.track.as_ref()
+    {
+        let action = widgets::row_menu(
+            ui,
+            &p,
+            &menu,
+            widgets::RowMenu {
+                track,
+                playlist_id: None,
+                playlists: &app.library.playlists.items,
+                signed_in: app.signed_in(),
+                queue_index: None,
+            },
+        );
+        if let Some(action) = action {
+            app.row_action(action);
+        }
     }
     if let Some(region) = region
         && region_alpha > 0.01
@@ -718,7 +815,16 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
         lyrics_column(app, &mut layer, &m, region, &video_id);
     }
     if queue_t > 0.001 {
+        // Asked here rather than in the panel: the side panel's queue keeps its place through a
+        // change of song, where it sits beside a page you may be reading it against.
+        let browsing = ctx.pointer_hover_pos().is_some_and(|at| list.contains(at));
+        if queue_goes_to_top(app.fs.queue_song.as_deref(), &video_id, browsing) {
+            app.queue_scroll_reset = true;
+        }
+        app.fs.queue_song = Some(video_id.clone());
         queue_region(app, ui, &m, list, queue_t);
+    } else {
+        app.fs.queue_song = None;
     }
 
     // The controls, as one layer that fades.
@@ -733,6 +839,18 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
     if windowed {
         title_strip(app, ui, strip, missing);
     }
+    // Two columns: the controls span them, so the bar shares their outer edges.
+    let two_columns = if m.portrait {
+        0.0
+    } else {
+        region_t.max(queue_t)
+    };
+    let controls_w = mix(
+        m.controls_w,
+        block_width(&with).unwrap_or(m.controls_w),
+        two_columns,
+    );
+    let bar_inset = mix(120.0 * m.scale, 0.0, two_columns);
     let hovering = ctx.pointer_hover_pos().is_some_and(|pos| {
         bottom.contains(pos) || top.contains(pos) || (windowed && strip.contains(pos))
     });
@@ -750,7 +868,40 @@ pub fn view(app: &mut App, ui: &mut egui::Ui) {
     }
     let mut layer = ui.new_child(UiBuilder::new().max_rect(screen));
     layer.multiply_opacity(alpha);
-    controls(app, &mut layer, &m, bottom, top, missing, windowed);
+    controls(
+        app,
+        &mut layer,
+        &m,
+        Band {
+            bottom,
+            top,
+            width: controls_w,
+            bar_inset,
+        },
+        missing,
+        windowed,
+    );
+}
+
+/// The sharp cover asked for ahead of the view: the most a cover is ever fetched at.
+const PREPARED_COVER_PT: f32 = 512.0;
+/// How long a sharper cover takes to fade in over the one standing in for it.
+const COVER_FADE_SECS: f32 = 0.25;
+/// How long lyrics that have just arrived take to fade in.
+const LYRICS_ARRIVE_SECS: f32 = 0.3;
+
+/// Ask for what the view shows of the current song as soon as it starts, so that opening the view
+/// finds it ready instead of filling in while you watch. Cheap on every frame: both are lookups
+/// once asked for.
+pub fn prepare(app: &mut App, ctx: &egui::Context) {
+    let Some(url) = app.now.track.as_ref().and_then(|t| t.thumbnail.clone()) else {
+        return;
+    };
+    let url = Some(&url);
+    crate::ui::art_texture(&mut app.images, &app.backend, ctx, url, PREPARED_COVER_PT);
+    if app.settings.adaptive_art_color {
+        crate::ui::art_texture_backdrop(&mut app.images, &app.backend, url);
+    }
 }
 
 /// The cover, or the music video playing where it would be, at its own 16:9.
@@ -760,36 +911,107 @@ fn paint_cover(
     cover: Rect,
     art_url: Option<&std::sync::Arc<str>>,
     video: bool,
-) {
+) -> egui::Response {
     let ctx = ui.ctx().clone();
     if video {
         // The cover's own curve, so a video and a cover in the same place round alike.
         let radius = crate::widgets::ArtShape::Wide.radius(cover);
         ui.painter().rect_filled(cover, radius, Color32::BLACK);
         crate::ui::video::paint_frame(app, ui, cover, radius);
-        if ui
-            .interact(cover, Id::new("fs-video"), Sense::click())
-            .clicked()
-        {
+        let hit = ui.interact(cover, Id::new("fs-video"), Sense::click());
+        if hit.clicked() {
             app.toggle_playback();
         }
-        return;
+        return hit;
     }
-    // The cover at this size may not be fetched yet (the bar only ever asked for its small
-    // one): until it lands, the small one stretched stands in, rather than an empty disc.
+    // The cover at this size may not be fetched yet: until it lands, the one [`prepare`] asked
+    // for stands in, or the bar's small one if that hasn't come either, and it fades in over them.
     let large = crate::ui::art_texture(&mut app.images, &app.backend, &ctx, art_url, cover.width())
         .cloned();
-    let texture = large.or_else(|| {
+    let stand_in = crate::ui::art_texture(
+        &mut app.images,
+        &app.backend,
+        &ctx,
+        art_url,
+        PREPARED_COVER_PT,
+    )
+    .cloned()
+    .or_else(|| {
         crate::ui::art_texture(&mut app.images, &app.backend, &ctx, art_url, 56.0).cloned()
     });
     let p = app.palette;
-    widgets::paint_art(ui, &p, cover, texture.as_ref(), widgets::ArtShape::Square);
+    let shape = widgets::ArtShape::Square;
+    let shown = ctx.animate_bool_with_time(
+        Id::new(("fs-cover", art_url)),
+        large.is_some(),
+        COVER_FADE_SECS,
+    );
+    match (&stand_in, &large) {
+        (Some(_), Some(large)) => {
+            widgets::paint_art(ui, &p, cover, stand_in.as_ref(), shape);
+            widgets::paint_art_over(ui, cover, large, shape, shown);
+        }
+        (None, Some(_)) => {
+            widgets::paint_art_faded(ui, &p, cover, large.as_ref(), shape, shown);
+        }
+        (_, None) => widgets::paint_art(ui, &p, cover, stand_in.as_ref(), shape),
+    }
+    ui.interact(cover, Id::new("fs-cover-hit"), Sense::click())
 }
 
-/// Whether the view is showing in the window rather than fullscreen: the window is not
-/// fullscreen, and the view is not waiting for it to become so.
-pub(crate) fn in_window(app: &App, ctx: &egui::Context) -> bool {
-    !app.fs.manages_window && !crate::window_fullscreen::is(ctx)
+/// Whether the window is in the state for the in-window layout.
+fn in_window(ctx: &egui::Context) -> bool {
+    !crate::window_fullscreen::is(ctx)
+}
+
+/// How long a layout waits for the window's new size. A change between two states of the same
+/// size (maximised to fullscreen, on a screen with no panels) never brings one.
+const WINDOW_SIZE_WAIT: Duration = Duration::from_millis(500);
+
+/// How recent a change of size must be to count as the window's answer to a change of state.
+const WINDOW_SIZE_RECENT: Duration = Duration::from_millis(100);
+
+/// Which layout is showing, as the window goes in or out of fullscreen. The new layout on the old
+/// size puts the cover at a wrong size for those frames: the wiggle. So the layout changes with
+/// the size. The two come in either order, and on Wayland in the same frame: X11 reports the state
+/// first, so a size that has already come counts as well as one still to come.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WindowFrame {
+    shown: Option<bool>,
+    /// When the window's state changed, while the layout waits.
+    held: Option<Instant>,
+    /// The size last frame, and when it last changed.
+    size: Option<egui::Vec2>,
+    resized: Option<Instant>,
+}
+
+impl WindowFrame {
+    /// The layout for this frame, `true` for in the window.
+    fn step(&mut self, windowed: bool, size: egui::Vec2, now: Instant) -> bool {
+        if self.size.replace(size).is_some_and(|last| last != size) {
+            self.resized = Some(now);
+        }
+        let shown = *self.shown.get_or_insert(windowed);
+        if shown == windowed {
+            self.held = None;
+            return shown;
+        }
+        let since = *self.held.get_or_insert(now);
+        let answered = self
+            .resized
+            .is_some_and(|at| now.duration_since(at) < WINDOW_SIZE_RECENT);
+        if answered || now.duration_since(since) >= WINDOW_SIZE_WAIT {
+            self.shown = Some(windowed);
+            self.held = None;
+            return windowed;
+        }
+        shown
+    }
+
+    /// Whether the layout is waiting for the window, and frames must keep coming.
+    fn holding(&self) -> bool {
+        self.held.is_some()
+    }
 }
 
 /// The title strip of a view kept in the window, laid out as the top bar is: the window is
@@ -843,7 +1065,7 @@ fn test_screen() -> Option<Rect> {
 /// nearly gone at the bottom. Painted at the shell's own opacity, so on a see-through window
 /// the desktop shows through the wash the way it does through the gutter.
 fn wash(p: &theme::Palette, tint: Color32) -> (Color32, Color32) {
-    let strength = if p.dark { (0.52, 0.08) } else { (0.34, 0.06) };
+    let strength = if p.dark { (0.47, 0.07) } else { (0.31, 0.055) };
     (
         p.window
             .lerp_to_gamma(tint, strength.0)
@@ -854,9 +1076,9 @@ fn wash(p: &theme::Palette, tint: Color32) -> (Color32, Color32) {
     )
 }
 
-/// A base with the cover's tint washing down from the top. As opaque as the shell is: solid by
-/// default, and see-through (and blurred, where the compositor does that) when the window is.
-fn background(
+/// A base with the cover's tint washing down from the top. As opaque as the shell is: solid by default, and see-through (and blurred, where the
+/// compositor does that) when the window is.
+fn wash_background(
     ui: &egui::Ui,
     p: &theme::Palette,
     screen: Rect,
@@ -864,6 +1086,134 @@ fn background(
     radius: CornerRadius,
 ) {
     let (top, bottom) = wash(p, tint);
+    gradient(ui, screen, radius, top, bottom);
+    // Kept in the window it is a card, with the cards' own hairline where the theme draws one.
+    if radius != CornerRadius::ZERO
+        && let Some(edge) = p.card_edge()
+    {
+        ui.painter().rect_stroke(
+            screen,
+            radius,
+            egui::Stroke::new(1.0, edge),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+/// How long a new backdrop takes to fade in over the last one: as long as the tint under it takes.
+const BACKDROP_FADE_SECS: f64 = TINT_SECS as f64;
+
+/// The blurred covers on screen: the current one, and while it fades in, the one before.
+#[derive(Clone, Default)]
+pub struct Backdrop {
+    current: Option<egui::TextureHandle>,
+    previous: Option<egui::TextureHandle>,
+    /// When the current one arrived, in the input's seconds.
+    since: f64,
+    /// Whether a frame has passed. One ready on the first frame needs no fade: the view is
+    /// fading nothing out, it just opened.
+    started: bool,
+}
+
+impl std::fmt::Debug for Backdrop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Backdrop").finish_non_exhaustive()
+    }
+}
+
+impl Backdrop {
+    /// Take in this frame's cover, if it has loaded, and say how far in the current one is. A
+    /// song whose backdrop hasn't arrived keeps the last one up rather than dropping to the wash,
+    /// and one that arrives during a fade waits for its end: three covers can't crossfade.
+    fn step(&mut self, want: Option<egui::TextureHandle>, now: f64) -> f32 {
+        let done = now - self.since >= BACKDROP_FADE_SECS;
+        if done {
+            self.previous = None;
+        }
+        if let Some(want) = want
+            && self.current.as_ref().map(|c| c.id()) != Some(want.id())
+            && (done || self.current.is_none())
+        {
+            self.since = if self.started { now } else { f64::NEG_INFINITY };
+            self.previous = self.current.replace(want);
+        }
+        self.started = true;
+        ((now - self.since) / BACKDROP_FADE_SECS).clamp(0.0, 1.0) as f32
+    }
+}
+
+/// What to paint the last cover and the next one at, in that order, to crossfade them `t` of the
+/// way at `strength`. One over the other, each covers some of what is beneath: solved so that what
+/// shows of the background stays the same throughout, and nothing is left to remove at the end.
+fn crossfade(strength: f32, t: f32) -> (f32, f32) {
+    let next = strength * t;
+    (strength * (1.0 - t) / (1.0 - next), next)
+}
+
+/// The part of a texture that covers a rect without stretching: the middle of it, cropped.
+pub(crate) fn cover_uv(texture: egui::Vec2, rect: egui::Vec2) -> Rect {
+    let scale = (rect.x / texture.x).max(rect.y / texture.y);
+    let shown = vec2(rect.x / (texture.x * scale), rect.y / (texture.y * scale));
+    Rect::from_center_size(pos2(0.5, 0.5), shown)
+}
+
+/// How much of the blurred cover shows over the wash: a texture in the colour, not a picture.
+const BACKDROP_STRENGTH: f32 = 0.225;
+
+/// The window colour coming back over the cover, faint at the top and nearly whole at the bottom,
+/// so the view keeps the wash's shape and settles into the app's own colour.
+fn veil(p: &theme::Palette) -> (Color32, Color32) {
+    (p.window.gamma_multiply(0.05), p.window.gamma_multiply(0.9))
+}
+
+/// The blurred cover, faintly over the wash and under its veil.
+fn paint_backdrop(
+    app: &mut App,
+    ui: &egui::Ui,
+    screen: Rect,
+    radius: CornerRadius,
+    art_url: Option<&std::sync::Arc<str>>,
+) {
+    let art_url = art_url.filter(|_| app.settings.adaptive_art_color);
+    let want = crate::ui::art_texture_backdrop(&mut app.images, &app.backend, art_url).cloned();
+    let now = ui.ctx().input(|i| i.time);
+    let t = app.fs.backdrop.step(want, now);
+    if t < 1.0 {
+        ui.ctx().request_repaint();
+    }
+    let p = app.palette;
+    let backdrop = &app.fs.backdrop;
+    let image = |texture: &egui::TextureHandle, alpha: f32| {
+        let uv = cover_uv(texture.size_vec2(), screen.size());
+        let tint = Color32::WHITE.gamma_multiply(alpha);
+        ui.painter().add(
+            egui::epaint::RectShape::filled(screen, radius, tint).with_texture(texture.id(), uv),
+        );
+    };
+    let Some(current) = &backdrop.current else {
+        return;
+    };
+    // Eased, so the fade neither starts nor stops with a visible edge.
+    let t = t * t * (3.0 - 2.0 * t);
+    let (last, next) = crossfade(BACKDROP_STRENGTH * p.gutter_alpha, t);
+    if let Some(previous) = &backdrop.previous {
+        image(previous, last);
+    }
+    image(current, next);
+    // The veil comes in with the first image, over the wash that has none.
+    let veil_alpha = if backdrop.previous.is_some() { 1.0 } else { t } * p.gutter_alpha;
+    let (top, bottom) = veil(&p);
+    gradient(
+        ui,
+        screen,
+        radius,
+        top.gamma_multiply(veil_alpha),
+        bottom.gamma_multiply(veil_alpha),
+    );
+}
+
+/// A rect, with rounded corners or without, shaded from `top` to `bottom`.
+fn gradient(ui: &egui::Ui, screen: Rect, radius: CornerRadius, top: Color32, bottom: Color32) {
     let mut mesh = egui::Mesh::default();
     if radius == CornerRadius::ZERO {
         mesh.colored_vertex(screen.left_top(), top);
@@ -875,9 +1225,8 @@ fn background(
         ui.painter().add(egui::Shape::mesh(mesh));
         return;
     }
-    // Kept in the window, the wash is a card: cut to the panel corners, each vertex coloured by
-    // its height and the anti-aliased edge keeping the soft alpha the tessellator gave it, with
-    // the cards' own hairline where the theme draws one.
+    // Cut to the window's corners: each vertex coloured by its height and the anti-aliased edge
+    // keeping the soft alpha the tessellator gave it.
     let mut tessellator = egui::epaint::Tessellator::new(
         ui.ctx().pixels_per_point(),
         egui::epaint::TessellationOptions::default(),
@@ -895,21 +1244,22 @@ fn background(
             .gamma_multiply(f32::from(vertex.color.a()) / 255.0);
     }
     ui.painter().add(egui::Shape::mesh(mesh));
-    if let Some(edge) = p.card_edge() {
-        ui.painter().rect_stroke(
-            screen,
-            radius,
-            egui::Stroke::new(1.0, edge),
-            egui::StrokeKind::Inside,
-        );
-    }
 }
 
-/// The tint eased toward its target, so a song change washes into the next colour instead of
-/// switching.
-fn animated(ctx: &egui::Context, tint: Color32) -> Color32 {
+/// How long the tint takes to reach a new colour.
+const TINT_SECS: f32 = 0.9;
+
+/// The colour to wash toward: the cover's when known, otherwise the last one while a cover is on
+/// its way. A song with no cover has none to wait for.
+fn tint_target(last: Option<Color32>, has_cover: bool, known: Option<Color32>) -> Option<Color32> {
+    known.or(last.filter(|_| has_cover))
+}
+
+/// The tint eased toward its target over `secs`, so a song change washes into the next colour
+/// instead of switching. No time at all when the view opens, which has nothing to wash from.
+fn animated(ctx: &egui::Context, tint: Color32, secs: f32) -> Color32 {
     let channel = |i: usize, v: u8| {
-        ctx.animate_value_with_time(Id::new(("fs-tint", i)), f32::from(v), 0.9)
+        ctx.animate_value_with_time(Id::new(("fs-tint", i)), f32::from(v), secs)
             .round()
             .clamp(0.0, 255.0) as u8
     };
@@ -922,39 +1272,89 @@ fn animated(ctx: &egui::Context, tint: Color32) -> Color32 {
 
 /// The title and credits, left-aligned in `rect` or centred in it, or anywhere between as the
 /// layout glides: `centre_t` is 0 for left and 1 for centred.
-fn info_text(
-    ui: &egui::Ui,
-    p: &theme::Palette,
-    m: &Metrics,
-    rect: Rect,
-    title: &str,
-    credits: &str,
-    centre_t: f32,
-) {
-    let place = |text: &str, font: &egui::FontId| {
-        let text = widgets::truncate_to(ui, text, font.clone(), rect.width()).into_owned();
-        let w = widgets::text_width(ui, &text, font);
-        let x = rect.left() + (rect.width() - w) / 2.0 * centre_t;
-        (text, x)
-    };
+fn info_text(app: &App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, centre_t: f32) -> SongHits {
+    let p = app.palette;
+    let track = app.now.track.as_ref();
+    let title = track.map_or("", |t| t.title.as_str());
+    let album = track.is_some_and(|t| t.album_id.is_some());
+    let at = |full: f32| rect.left() + ((rect.width() - full) / 2.0).max(0.0) * centre_t;
+
+    // The title, as in the player bar: a link to its album, scrolling on hover when too long.
     let title_font = theme::bold(m.title);
-    let (text, x) = place(title, &title_font);
-    ui.painter().text(
-        pos2(x, rect.top()),
-        egui::Align2::LEFT_TOP,
-        text,
+    let title_h = m.title * 1.4;
+    let full = widgets::text_width(ui, title, &title_font);
+    let width = full.min(rect.width());
+    let pos = pos2(at(full), rect.top() + title_h / 2.0);
+    let hit_rect = Rect::from_center_size(
+        pos2(pos.x + width / 2.0, pos.y),
+        vec2(width.max(1.0), title_h),
+    );
+    let title_hit = widgets::marquee_line(
+        ui,
+        pos,
+        rect.width(),
+        title,
         title_font,
         p.text,
-    );
+        "fs-title",
+        Sense::click(),
+        false,
+    )
+    .unwrap_or_else(|| ui.interact(hit_rect, Id::new("fs-title-hit"), Sense::click()));
+    if album && title_hit.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        ui.painter().hline(
+            pos.x..=(pos.x + width),
+            pos.y + m.title * 0.58,
+            egui::Stroke::new((m.title / 16.0).max(1.0), p.text),
+        );
+    }
+
+    // The credits: one link per artist, over one hit rect for the menu. The rect first, so the
+    // links are on top of it.
     let credits_font = theme::regular(m.credits);
-    let (text, x) = place(credits, &credits_font);
-    ui.painter().text(
-        pos2(x, rect.top() + m.title * 1.4),
-        egui::Align2::LEFT_TOP,
-        text,
-        credits_font,
-        p.secondary,
+    let y = rect.top() + title_h + m.credits * 0.8;
+    let line = track.map(|t| t.artist_line()).unwrap_or_default();
+    let full = widgets::text_width(ui, &line, &credits_font);
+    let x = at(full);
+    let credits_hit = ui.interact(
+        Rect::from_center_size(
+            pos2(x + full.min(rect.width()) / 2.0, y),
+            vec2(full.min(rect.width()).max(1.0), m.credits * 1.6),
+        ),
+        Id::new("fs-credits-hit"),
+        Sense::click(),
     );
+    let link = track.and_then(|t| {
+        widgets::paint_subtitle_marquee(
+            ui,
+            &p,
+            pos2(x, y),
+            rect.width(),
+            &crate::ui::track_subtitle_no_album(t),
+            None,
+            "fs-credits",
+            false,
+            credits_font,
+            p.secondary,
+        )
+        .map(crate::ui::link_route)
+    });
+    let album_route = title_hit
+        .clicked()
+        .then(|| track.and_then(|t| t.album_id.clone()).map(Route::Album))
+        .flatten();
+    SongHits {
+        menu: title_hit.union(credits_hit),
+        go: link.or(album_route),
+    }
+}
+
+/// What the song's name answered this frame: where a right-click opens its menu, and where a
+/// click on a link wants to go.
+struct SongHits {
+    menu: egui::Response,
+    go: Option<Route>,
 }
 
 /// Bars shaped like the lines that are about to arrive: the real lines' height, pitch and left
@@ -997,10 +1397,18 @@ fn lyrics_skeleton(ui: &mut egui::Ui, p: &theme::Palette, m: &Metrics, rect: Rec
 fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, video_id: &str) {
     let p = app.palette;
     let ctx = ui.ctx().clone();
+    // An animation starts at its target the first time it is asked, so lyrics already here when
+    // the view opens are simply there; only ones arriving while it watches fade in.
+    let arrived = ctx.animate_bool_with_time(
+        Id::new(("fs-lyrics-arrive", video_id)),
+        !app.lyrics_loading,
+        LYRICS_ARRIVE_SECS,
+    );
     if app.lyrics_loading {
         lyrics_skeleton(ui, &p, m, rect);
         return;
     }
+    ui.multiply_opacity(arrived);
     let Some(lyrics) = app.lyrics.as_ref() else {
         return;
     };
@@ -1048,10 +1456,30 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
     if !synced {
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect));
         let from = painted_so_far(&child);
+        let plain_font = theme::semibold(m.lyrics * 0.75);
+        let gap = m.line_gap * 0.55;
+        let total: f32 = lyrics
+            .lines
+            .iter()
+            .map(|line| {
+                let text = if line.text.is_empty() {
+                    "♪".to_owned()
+                } else {
+                    line.text.clone()
+                };
+                ui.painter()
+                    .layout(text, plain_font.clone(), Color32::PLACEHOLDER, rect.width())
+                    .size()
+                    .y
+                    + gap
+            })
+            .sum();
         let output = egui::ScrollArea::vertical()
             .id_salt("fs-plain-lyrics")
             .auto_shrink([false, false])
             .show(&mut child, |ui| {
+                // Words that all fit sit in the middle of their column.
+                ui.add_space(((rect.height() - total) / 2.0).max(0.0));
                 for line in &lyrics.lines {
                     let text = if line.text.is_empty() {
                         "♪"
@@ -1060,29 +1488,23 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
                     };
                     ui.label(
                         egui::RichText::new(text)
-                            .font(theme::semibold(m.lyrics * 0.75))
+                            .font(plain_font.clone())
                             .color(p.text.gamma_multiply(0.85)),
                     );
-                    ui.add_space(m.line_gap * 0.55);
+                    ui.add_space(gap);
                 }
             });
-        // The same band the timed lyrics melt over.
+        // The same band the timed lyrics melt over, once there is that much past the edge.
         let fade = LYRICS_FADE * m.scale;
-        let (above, below) = edge_fades(
-            (
-                output.state.offset.y,
-                output.content_size.y,
-                output.inner_rect.height(),
-            ),
-            fade,
-        );
+        let offset = output.state.offset.y;
+        let past = output.content_size.y - offset - output.inner_rect.height();
         fade_painted(
             &ctx,
             child.layer_id(),
             from,
             output.inner_rect,
-            EdgeFade::eased(fade, above),
-            EdgeFade::eased(fade, below),
+            EdgeFade::for_hidden(offset, fade),
+            EdgeFade::for_hidden(past, fade),
         );
         return;
     }
@@ -1091,9 +1513,17 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
     // Before the first line is sung nothing is active: the words wait near the top of their
     // region rather than leaving it empty above, then glide down to the anchor.
     let first = galleys[0].size().y / 2.0;
-    let target = active
-        .map(|a| tops[a] + galleys[a].size().y / 2.0)
-        .unwrap_or(first + rect.height() * (ANCHOR - 0.12));
+    // Words that all fit don't scroll: they sit in the middle of their column, as one block.
+    let total = y - m.line_gap;
+    let fits = total + 2.0 * LYRICS_FADE * m.scale <= rect.height();
+    let anchor_y = rect.height() * ANCHOR;
+    let target = if fits {
+        anchor_y - (rect.height() - total) / 2.0
+    } else {
+        active
+            .map(|a| tops[a] + galleys[a].size().y / 2.0)
+            .unwrap_or(first + rect.height() * (ANCHOR - 0.12))
+    };
     let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.05);
     let now = Instant::now();
     // A new wrap width re-flows every line, so offsets measured against the old one point at the
@@ -1108,9 +1538,10 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
         app.fs.scroll = ease(app.fs.scroll, target, dt);
     }
     // The wheel browses ahead or back; a few quiet seconds later the view glides home.
-    if ctx
-        .pointer_hover_pos()
-        .is_some_and(|pos| rect.contains(pos))
+    if !fits
+        && ctx
+            .pointer_hover_pos()
+            .is_some_and(|pos| rect.contains(pos))
     {
         let wheel = ctx.input(|i| i.smooth_scroll_delta.y);
         if wheel != 0.0 {
@@ -1125,7 +1556,7 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
         ctx.request_repaint();
     }
 
-    let anchor = rect.top() + rect.height() * ANCHOR;
+    let anchor = rect.top() + anchor_y;
     let view = app.fs.scroll + app.fs.manual;
     let painter = ui.painter().with_clip_rect(rect);
     let melt = LYRICS_FADE * m.scale;
@@ -1167,6 +1598,12 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
         app.seek_to(at_ms as f64 / 1000.0);
         app.fs.manual = 0.0;
     }
+}
+
+/// Whether the queue shows from its top this frame: when it has just come up, and when the song
+/// has changed, unless the pointer is on the list, which may be someone reading further down it.
+fn queue_goes_to_top(last: Option<&str>, song: &str, browsing: bool) -> bool {
+    last.is_none_or(|last| last != song && !browsing)
 }
 
 /// The queue, borderless like the lyrics: its rows sit straight on the background, fading out at
@@ -1262,20 +1699,34 @@ fn drawer_type(m: &Metrics) -> Metrics {
     }
 }
 
+/// Where the controls go: the bands they own, how wide they run, and how far in from that the
+/// seek bar stops, leaving its time labels inside.
+struct Band {
+    bottom: Rect,
+    top: Rect,
+    width: f32,
+    bar_inset: f32,
+}
+
 fn controls(
     app: &mut App,
     ui: &mut egui::Ui,
     m: &Metrics,
-    bottom: Rect,
-    top: Rect,
+    band: Band,
     missing: bool,
     windowed: bool,
 ) {
     let p = app.palette;
     let s = m.scale;
+    let Band {
+        bottom,
+        top,
+        width,
+        bar_inset,
+    } = band;
     let column = Rect::from_center_size(
         bottom.center(),
-        vec2(bottom.width().min(m.controls_w), bottom.height()),
+        vec2(bottom.width().min(width), bottom.height()),
     );
 
     // Seek.
@@ -1287,7 +1738,7 @@ fn controls(
     };
     let bar = Rect::from_center_size(
         pos2(column.center().x, column.top() + 24.0 * s),
-        vec2((column.width() - 120.0 * s).max(60.0), 4.0),
+        vec2((column.width() - bar_inset).max(60.0), 4.0),
     );
     if let Some(to) = widgets::seek_bar(ui, &p, bar, fraction as f32, duration, position, true) {
         app.seek_to(to);
@@ -1558,20 +2009,240 @@ mod tests {
         }
     }
 
-    /// Without lyrics, and on a window too narrow for them beside it, the column stands alone
-    /// in the middle.
+    /// On a window too narrow for two columns, the column stands alone in the middle, with
+    /// lyrics or without.
     #[test]
-    fn the_queue_column_stands_alone_without_room_for_lyrics() {
-        for (w, h, region) in [(1920.0, 1080.0, false), (420.0, 300.0, true)] {
-            let screen = screen(w, h);
+    fn the_queue_column_stands_alone_without_room_for_two() {
+        for region in [true, false] {
+            let screen = screen(420.0, 300.0);
             let m = Metrics::new(screen);
             let (open, list) = queue_layout(screen, &m, region, false);
             assert!(open.region.is_none());
+            assert!((list.center().x - screen.center().x).abs() < 0.5);
+        }
+    }
+
+    /// With lyrics off the queue takes their place on the right, and the cover and name keep
+    /// the place they have beside the lyrics.
+    #[test]
+    fn without_lyrics_the_queue_goes_where_they_were() {
+        for (w, h) in [(1920.0, 1080.0), (1366.0, 768.0), (1100.0, 720.0)] {
+            let screen = screen(w, h);
+            let m = Metrics::new(screen);
+            let beside = layout(screen, &m, true, false);
+            let (open, list) = queue_layout(screen, &m, false, false);
+            assert_eq!(
+                list,
+                beside.region.unwrap(),
+                "{w}x{h}: not the lyrics' place"
+            );
+            assert_eq!(open.cover, beside.cover, "{w}x{h}: the cover moved");
+            assert_eq!(open.info, beside.info, "{w}x{h}: the name moved");
+            assert!(open.region.is_none() && !open.centred);
+        }
+    }
+
+    /// Beside the lyrics the column lines up with the cover and name, on every landscape size.
+    #[test]
+    fn the_column_lines_up_with_the_cover_and_name() {
+        for (w, h) in [(1920.0, 1080.0), (1366.0, 768.0), (1100.0, 720.0)] {
+            let screen = screen(w, h);
+            let m = Metrics::new(screen);
+            let lay = layout(screen, &m, true, false);
+            let (cover, info, region) =
+                (lay.cover.unwrap(), lay.info.unwrap(), lay.region.unwrap());
+            assert!((region.top() - cover.top()).abs() < 0.5, "{w}x{h}: top");
             assert!(
-                (list.center().x - screen.center().x).abs() < 0.5,
-                "{w}: off centre"
+                (region.bottom() - info.bottom()).abs() < 0.5,
+                "{w}x{h}: bottom"
             );
         }
+    }
+
+    /// A video is short, and the column beside it keeps room to read.
+    #[test]
+    fn the_column_beside_a_video_keeps_its_room() {
+        let screen = screen(1920.0, 1080.0);
+        let m = Metrics::new(screen);
+        let lay = layout(screen, &m, true, true);
+        let room = content_rect(screen, &m).height() * 0.6;
+        assert!(lay.region.unwrap().height() >= room - 0.5);
+    }
+
+    /// With two columns the controls span them and stay centred; alone there is no block.
+    #[test]
+    fn the_controls_span_the_two_columns() {
+        let screen = screen(1920.0, 1080.0);
+        let m = Metrics::new(screen);
+        let with = layout(screen, &m, true, false);
+        let width = block_width(&with).unwrap();
+        let region = with.region.unwrap();
+        let left = with.cover.unwrap().left();
+        assert!((left + width - region.right()).abs() < 0.5);
+        assert!(((left + region.right()) / 2.0 - screen.center().x).abs() < 0.5);
+        assert!(block_width(&layout(screen, &m, false, false)).is_none());
+    }
+
+    /// The backdrop fills the view without stretching: a square texture on a wide window shows
+    /// its middle band at full width.
+    #[test]
+    fn the_backdrop_covers_without_stretching() {
+        let uv = cover_uv(vec2(96.0, 96.0), vec2(1920.0, 1080.0));
+        assert!((uv.width() - 1.0).abs() < 1e-4);
+        assert!((uv.height() - 0.5625).abs() < 1e-4);
+        assert!((uv.center().y - 0.5).abs() < 1e-4);
+        let tall = cover_uv(vec2(96.0, 96.0), vec2(600.0, 900.0));
+        assert!((tall.height() - 1.0).abs() < 1e-4);
+        assert!((tall.width() - 2.0 / 3.0).abs() < 1e-4);
+    }
+
+    /// A backdrop ready on the first frame is simply there; a later one fades in over the last,
+    /// which then lets go of its texture.
+    #[test]
+    fn a_new_backdrop_fades_in_over_the_last() {
+        let ctx = egui::Context::default();
+        let texture = |name: &str| {
+            ctx.load_texture(
+                name,
+                egui::ColorImage::example(),
+                egui::TextureOptions::LINEAR,
+            )
+        };
+        let mut backdrop = Backdrop::default();
+        assert_eq!(backdrop.step(Some(texture("a")), 10.0), 1.0);
+        assert!(backdrop.previous.is_none());
+        let b = texture("b");
+        assert_eq!(backdrop.step(Some(b.clone()), 11.0), 0.0);
+        assert!(backdrop.previous.is_some());
+        assert!(backdrop.step(Some(b.clone()), 11.3) > 0.2);
+        assert_eq!(backdrop.step(None, 11.1 + BACKDROP_FADE_SECS), 1.0);
+        assert!(backdrop.previous.is_none());
+        assert_eq!(backdrop.current.map(|c| c.id()), Some(b.id()));
+    }
+
+    /// A cover that comes during a fade waits for it to end: another song skipped to mid-fade
+    /// would otherwise put the half-faded one on at full strength.
+    #[test]
+    fn a_backdrop_that_comes_during_a_fade_waits_for_its_end() {
+        let ctx = egui::Context::default();
+        let texture = |name: &str| {
+            ctx.load_texture(
+                name,
+                egui::ColorImage::example(),
+                egui::TextureOptions::LINEAR,
+            )
+        };
+        let (a, b, c) = (texture("a"), texture("b"), texture("c"));
+        let mut backdrop = Backdrop::default();
+        backdrop.step(Some(a), 10.0);
+        backdrop.step(Some(b.clone()), 11.0);
+        assert!(backdrop.step(Some(c.clone()), 11.2) > 0.0);
+        assert_eq!(backdrop.current.as_ref().map(|t| t.id()), Some(b.id()));
+        assert_eq!(
+            backdrop.step(Some(c.clone()), 11.0 + BACKDROP_FADE_SECS),
+            0.0
+        );
+        assert_eq!(backdrop.current.as_ref().map(|t| t.id()), Some(c.id()));
+    }
+
+    /// A crossfade shows the same amount of the background throughout, and ends with the last
+    /// cover at nothing, so taking it away changes nothing on screen.
+    #[test]
+    fn a_crossfade_has_nothing_left_to_remove_at_its_end() {
+        let strength = BACKDROP_STRENGTH;
+        assert_eq!(crossfade(strength, 0.0), (strength, 0.0));
+        assert_eq!(crossfade(strength, 1.0), (0.0, strength));
+        for i in 0..=20 {
+            let (last, next) = crossfade(strength, i as f32 / 20.0);
+            assert!((((1.0 - last) * (1.0 - next)) - (1.0 - strength)).abs() < 1e-5);
+        }
+    }
+
+    /// The queue starts from its top whenever it comes up and with each new song, but doesn't
+    /// move under a pointer on the list.
+    #[test]
+    fn the_queue_goes_to_its_top_unless_it_is_being_read() {
+        assert!(queue_goes_to_top(None, "a", false));
+        assert!(queue_goes_to_top(None, "a", true));
+        assert!(!queue_goes_to_top(Some("a"), "a", false));
+        assert!(queue_goes_to_top(Some("a"), "b", false));
+        assert!(!queue_goes_to_top(Some("a"), "b", true));
+    }
+
+    /// The tint holds through a change of song, and nothing bright stands in for a missing one.
+    #[test]
+    fn the_tint_holds_until_the_next_colour_is_known() {
+        let (a, b) = (Color32::RED, Color32::BLUE);
+        assert_eq!(tint_target(None, true, None), None);
+        assert_eq!(tint_target(None, true, Some(a)), Some(a));
+        assert_eq!(tint_target(Some(a), true, None), Some(a));
+        assert_eq!(tint_target(Some(a), true, Some(b)), Some(b));
+        assert_eq!(tint_target(Some(a), false, None), None);
+    }
+
+    /// X11 says fullscreen before it has the size. The layout changes with the size, in both
+    /// directions.
+    #[test]
+    fn the_layout_changes_with_the_windows_size() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(5);
+        let (small, big) = (vec2(1100.0, 720.0), vec2(1920.0, 1080.0));
+        let mut frame = WindowFrame::default();
+        assert!(frame.step(true, small, now));
+        assert!(frame.step(false, small, now), "fullscreen on the old size");
+        assert!(frame.holding());
+        assert!(!frame.step(false, big, now));
+        assert!(!frame.holding());
+        assert!(
+            !frame.step(true, big, later),
+            "in the window on the old size"
+        );
+        assert!(frame.step(true, small, later));
+    }
+
+    /// Wayland brings the state and the size in the same frame, which leaves nothing to wait for.
+    #[test]
+    fn the_layout_changes_at_once_when_the_size_comes_with_the_state() {
+        let now = Instant::now();
+        let later = now + Duration::from_secs(5);
+        let (small, big) = (vec2(1100.0, 720.0), vec2(1920.0, 1080.0));
+        let mut frame = WindowFrame::default();
+        assert!(frame.step(true, small, now));
+        assert!(!frame.step(false, big, now));
+        assert!(!frame.holding());
+        assert!(frame.step(true, small, later));
+        assert!(!frame.holding());
+    }
+
+    /// A size just ahead of the state was the answer already. One from long before wasn't.
+    #[test]
+    fn a_size_just_ahead_of_the_state_counts() {
+        let now = Instant::now();
+        let soon = now + Duration::from_millis(30);
+        let (small, big) = (vec2(1100.0, 720.0), vec2(1920.0, 1080.0));
+        let mut frame = WindowFrame::default();
+        assert!(frame.step(true, small, now));
+        assert!(frame.step(true, big, now));
+        assert!(!frame.step(false, big, soon));
+
+        let mut frame = WindowFrame::default();
+        assert!(frame.step(true, small, now));
+        assert!(frame.step(true, big, now));
+        let long_after = now + Duration::from_secs(5);
+        assert!(frame.step(false, big, long_after), "an old resize");
+        assert!(frame.holding());
+    }
+
+    /// A change that never brings a new size doesn't hold the layout for good.
+    #[test]
+    fn the_layout_stops_waiting_for_a_size_that_never_comes() {
+        let now = Instant::now();
+        let size = vec2(1920.0, 1080.0);
+        let mut frame = WindowFrame::default();
+        assert!(frame.step(true, size, now));
+        assert!(frame.step(false, size, now));
+        assert!(!frame.step(false, size, now + WINDOW_SIZE_WAIT));
+        assert!(!frame.holding());
     }
 
     /// A drawer heading with the cover stacks cover, name and list top to bottom inside it, the

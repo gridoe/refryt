@@ -127,6 +127,19 @@ pub(crate) fn art_texture<'a>(
     })
 }
 
+/// Look up — and trigger the fetch of — the now-playing view's blurred backdrop for a cover.
+pub(crate) fn art_texture_backdrop<'a>(
+    images: &'a mut Images,
+    backend: &Backend,
+    url: Option<&Arc<str>>,
+) -> Option<&'a egui::TextureHandle> {
+    url.and_then(|url| {
+        images.texture_backdrop(url, |key, sized, px, wide| {
+            backend.fetch_backdrop(key, sized, px, wide)
+        })
+    })
+}
+
 /// Look up — and trigger the fetch of — a 16:9 still for something drawn `points` across.
 ///
 /// `points` is the drawn *width*; the height follows from it. The cache key is that width, so a
@@ -1825,138 +1838,273 @@ fn draw_shelf_grid(app: &mut crate::app::App, ui: &mut egui::Ui, shelf: &Shelf) 
     finish_grid(app, shelf, grid);
 }
 
-/// The colour of the wash at `t`, where 0 is its top edge and 1 is where it has gone.
-///
-/// Two segments, so the tint holds near the top and then falls away: a soft accent to a
-/// fainter one over the first half, that to nothing over the second.
-fn wash_stop(panel: egui::Color32, wash: egui::Color32, t: f32, alpha: f32) -> egui::Color32 {
-    let t = t.clamp(0.0, 1.0);
-    let strong = panel.lerp_to_gamma(wash, 0.38);
-    let mid = panel.lerp_to_gamma(wash, 0.18);
-    let stop = if t <= 0.5 {
-        strong.lerp_to_gamma(mid, t * 2.0)
-    } else {
-        mid.lerp_to_gamma(egui::Color32::TRANSPARENT, (t - 0.5) * 2.0)
-    };
-    // As opaque as the card it sits on, so a translucent page does not wear an opaque band
-    // across its header. At `Off` this is `gamma_multiply(1.0)` — an identity.
-    stop.gamma_multiply(alpha)
+/// How much of the blurred cover a page's header shows at its top, over the tint.
+const HEADER_BACKDROP_STRENGTH: f32 = 0.27;
+/// The header's band: its least and most height, and its share of the page between. A way past
+/// the header, for a fade with no visible end.
+const SOFT_REACH: (f32, f32, f32) = (305.0, 485.0, 0.54);
+/// The grid the soft band is cut into, so its curves are curves.
+const SOFT_STEPS: usize = 24;
+const SOFT_COLUMNS: usize = 24;
+/// Where across the card the glow is centred: behind the cover, not the middle of the page.
+const SOFT_ORIGIN_X: f32 = 0.3;
+/// How wide the glow is, in card widths. Wider than the card, so it thins toward the far side
+/// without running out.
+const SOFT_WIDTH: f32 = 1.6;
+
+/// How far out of the glow a point is, 0 at its centre and 1 at its edge: an ellipse from the top
+/// of the page behind the cover, so the fade has a rounded edge rather than a straight one.
+/// `across` is the share of the card's width, `down` of the band's height; above the top of the
+/// page it holds.
+fn soft_distance(across: f32, down: f32) -> f32 {
+    let dx = (across - SOFT_ORIGIN_X) / SOFT_WIDTH;
+    let dy = down.max(0.0);
+    (dx * dx + dy * dy).sqrt()
 }
 
-/// A wash of the active scheme's accent across the top of the content card.
+/// How much of a header's tint and cover is left at a distance from the glow's centre:
+/// all of it at the centre and nothing at the edge, along a curve that never steepens on the way,
+/// with a long, thin tail so the end doesn't show.
+fn soft_fade(distance: f32) -> f32 {
+    let left = 1.0 - distance.clamp(0.0, 1.0);
+    left * left
+}
+
+/// A page's header: the cover's tint across the top of the content card, with the blurred cover
+/// over it, both falling away along [`soft_fade`] and each eased in as it arrives. Until then the
+/// card is plain.
 ///
-/// Painted first inside the page's scroll content, so the tint travels with the header and
-/// scrolls away instead of lingering as a background. A smooth gradient mesh, full-bleed — it
-/// reaches the card's own left and right edges, past the content's side padding, which needs a
-/// painter whose clip rect is grown to match. The topmost slice is a rounded cap in the card's
-/// own radius, so a square mesh cannot poke past the card's corners onto the gutter, and it is
-/// pinned to the card's top edge rather than to the scrolled content — scroll and the *colour*
-/// there fades, as the gradient passing upward under a fixed corner should. Tinted at the top,
-/// gone a quarter of the way down. Always painted, so it no longer waits on the cover decoding
-/// before it appears.
-///
-/// `wash` is the colour it blends from `panel` down to nothing — the fixed accent, or (see
-/// [`header_wash_colour`]) the current cover's own dominant colour.
+/// Painted first inside the page's scroll content, so it travels with the header and scrolls away
+/// instead of lingering as a background. Full-bleed, reaching the card's own left and right edges
+/// past the content's side padding. Its top is cut to the card's own radius, pinned to the card
+/// rather than to the scrolled content.
 pub(crate) fn header_wash(
     ui: &mut egui::Ui,
     palette: &theme::Palette,
     content: egui::Rect,
     top: f32,
-    wash: egui::Color32,
+    tint: &HeaderTint,
 ) {
-    let h = content.height();
-    if h <= 0.0 {
+    let Some(band) = HeaderBand::new(content, top) else {
         return;
+    };
+    let span = band.span.max(1.0);
+    let width = band.card.width();
+    let fade = |x: f32, y: f32| {
+        soft_fade(soft_distance(
+            (x - band.card.left()) / width,
+            (y - top) / span,
+        ))
+    };
+    if let Some((colour, shown)) = tint.colour {
+        let strong = palette
+            .panel
+            .lerp_to_gamma(colour, 0.34)
+            .gamma_multiply(palette.card_alpha * shown);
+        band.paint(ui, |x, y| egui::epaint::Vertex {
+            pos: egui::pos2(x, y),
+            uv: egui::epaint::WHITE_UV,
+            color: strong.gamma_multiply(fade(x, y)),
+        });
     }
-    // The tint covers the header — cover, caption and the action row under them — and fades
-    // out just past it, the band the reference sets its header in. Proportional within bounds,
-    // so a short window still gets a band and a tall one does not tint half its list.
-    let bottom = top + (h * 0.4).clamp(240.0, 360.0);
-    // The card's own edges: the page's content rect grown by the side padding the card holds it
-    // in. `content` comes from the panel itself (`App::content_rect`) rather than from this ui's
-    // clip rect, which a scroll area builds from its viewport and its parent's clip and which
-    // is several points out on every side.
-    let card = egui::Rect::from_min_max(
-        egui::pos2(content.min.x - theme::PAGE_INSET_X, content.min.y),
-        egui::pos2(content.max.x + theme::PAGE_INSET_X, content.max.y),
-    );
-    // The card's top edge is the content's: there is no top margin left for the wash to cover,
-    // so the tint starts where the card does. Above `top` the colour simply holds at full
-    // strength; scroll and the gradient travels up under a cap that stays put.
-    let start = card.top();
-    if card.width() <= 0.0 || bottom <= start {
+    let Some((texture, shown)) = &tint.backdrop else {
         return;
-    }
-    let span = bottom - top;
-    let colour = |y: f32| wash_stop(palette.panel, wash, (y - top) / span, palette.card_alpha);
-
-    // A painter built from scratch, not `ui.painter().with_clip_rect(card)`: that *intersects*
-    // with the ui's clip, which inside a scroll area is the viewport, inset by the card's side
-    // padding — so the wash was clipped at the sides and left a bare strip of panel colour down
-    // each edge. This one is clipped to the card and nothing else, and the card never reaches
-    // past the panel it lives in.
-    let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), card);
-    // The cap's rounding, tessellated straight into the gradient mesh. A `rect_filled` cap
-    // would not do: egui clamps a shape's corner radius to half its height, and a cap one
-    // radius tall renders its corners at half the card's rounding — visibly squarer than the
-    // panel it sits on. Walking the quarter-circle as mesh rows keeps the true radius and the
-    // gradient continuous — no seam where a flat cap used to meet the mesh.
-    let rad = (theme::radii().panel as f32).min(bottom - start);
-    // (y, left x, right x) — pulled in along the arc, full width once past it.
-    let mut rows: Vec<(f32, f32, f32)> = Vec::new();
-    const ARC_STEPS: usize = 10;
-    for i in 0..=ARC_STEPS {
-        let y = start + rad * i as f32 / ARC_STEPS as f32;
-        let inset = widgets::corner_inset(rad, y - start);
-        rows.push((y, card.left() + inset, card.right() - inset));
-    }
-    let kink = top + span * 0.5;
-    let mut lower: Vec<f32> = vec![start + rad];
-    if kink > start + rad && kink < bottom {
-        lower.push(kink);
-    }
-    if bottom > start + rad {
-        lower.push(bottom);
-    }
-    for y in lower {
-        rows.push((y, card.left(), card.right()));
-    }
-    let mut mesh = egui::Mesh::default();
-    for &(y, xl, xr) in &rows {
-        for x in [xl, xr] {
-            mesh.vertices.push(egui::epaint::Vertex {
-                pos: egui::pos2(x, y),
-                uv: egui::epaint::WHITE_UV,
-                color: colour(y),
-            });
+    };
+    let uv = fullscreen::cover_uv(texture.size_vec2(), egui::vec2(width, span));
+    let strength = HEADER_BACKDROP_STRENGTH * shown * palette.card_alpha;
+    let mut mesh = band.mesh(|x, y| {
+        let across = (x - band.card.left()) / width;
+        let down = ((y - top) / span).clamp(0.0, 1.0);
+        egui::epaint::Vertex {
+            pos: egui::pos2(x, y),
+            uv: egui::pos2(
+                uv.left() + uv.width() * across,
+                uv.top() + uv.height() * down,
+            ),
+            color: egui::Color32::WHITE.gamma_multiply(strength * fade(x, y)),
         }
-    }
-    for row in 0..rows.len() - 1 {
-        let a = (row * 2) as u32;
-        mesh.add_triangle(a, a + 2, a + 1);
-        mesh.add_triangle(a + 1, a + 2, a + 3);
-    }
-    painter.add(mesh);
+    });
+    mesh.texture_id = texture.id();
+    band.painter(ui).add(mesh);
 }
 
-/// The header wash's colour: the current page's cover-art dominant colour, when "Match header
-/// colour to the cover art" is on and that art has finished decoding — the fixed accent
-/// otherwise. Self-healing: on the frame a page opens the art usually hasn't decoded yet, so
-/// this falls back to the accent that frame; once `page_header`'s own `art_texture()` call
-/// finishes the fetch, `images.dominant(url)` starts returning `Some` and the wash picks up
-/// the art's colour on the next frame, the same way the cover itself fades in once ready.
+/// The band of the content card a header's tint covers: the rows of a mesh from the card's
+/// rounded top down to where the tint has gone.
+struct HeaderBand {
+    card: egui::Rect,
+    /// From the top of the page's scroll content to where the tint has gone.
+    span: f32,
+    /// (y, left x, right x) of each row.
+    rows: Vec<(f32, f32, f32)>,
+}
+
+impl HeaderBand {
+    fn new(content: egui::Rect, top: f32) -> Option<Self> {
+        let h = content.height();
+        if h <= 0.0 {
+            return None;
+        }
+        // The tint covers the header — cover, caption and the action row under them — and fades
+        // out just past it, the band the reference sets its header in. Proportional within
+        // bounds, so a short window still gets a band and a tall one does not tint half its list.
+        let bottom = top + (h * SOFT_REACH.2).clamp(SOFT_REACH.0, SOFT_REACH.1);
+        // The card's own edges: the page's content rect grown by the side padding the card holds
+        // it in. `content` comes from the panel itself (`App::content_rect`) rather than from
+        // this ui's clip rect, which a scroll area builds from its viewport and its parent's clip
+        // and which is several points out on every side.
+        let card = egui::Rect::from_min_max(
+            egui::pos2(content.min.x - theme::PAGE_INSET_X, content.min.y),
+            egui::pos2(content.max.x + theme::PAGE_INSET_X, content.max.y),
+        );
+        // The card's top edge is the content's: there is no top margin left for the wash to
+        // cover, so the tint starts where the card does. Above `top` the colour simply holds at
+        // full strength; scroll and the gradient travels up under a cap that stays put.
+        let start = card.top();
+        if card.width() <= 0.0 || bottom <= start {
+            return None;
+        }
+        let span = bottom - top;
+        // The cap's rounding, tessellated straight into the gradient mesh. A `rect_filled` cap
+        // would not do: egui clamps a shape's corner radius to half its height, and a cap one
+        // radius tall renders its corners at half the card's rounding — visibly squarer than the
+        // panel it sits on. Walking the quarter-circle as mesh rows keeps the true radius and the
+        // gradient continuous — no seam where a flat cap used to meet the mesh.
+        let rad = (theme::radii().panel as f32).min(bottom - start);
+        // Pulled in along the arc, full width once past it.
+        let mut rows: Vec<(f32, f32, f32)> = Vec::new();
+        const ARC_STEPS: usize = 10;
+        for i in 0..=ARC_STEPS {
+            let y = start + rad * i as f32 / ARC_STEPS as f32;
+            let inset = widgets::corner_inset(rad, y - start);
+            rows.push((y, card.left() + inset, card.right() - inset));
+        }
+        let mut lower: Vec<f32> = vec![start + rad];
+        if bottom > start + rad {
+            lower.push(bottom);
+        }
+        for k in 1..SOFT_STEPS {
+            let y = top + span * k as f32 / SOFT_STEPS as f32;
+            if y > start + rad && y < bottom {
+                lower.push(y);
+            }
+        }
+        lower.sort_by(f32::total_cmp);
+        lower.dedup();
+        for y in lower {
+            rows.push((y, card.left(), card.right()));
+        }
+        Some(Self { card, span, rows })
+    }
+
+    fn mesh(&self, mut vertex: impl FnMut(f32, f32) -> egui::epaint::Vertex) -> egui::Mesh {
+        let mut mesh = egui::Mesh::default();
+        for &(y, xl, xr) in &self.rows {
+            for k in 0..=SOFT_COLUMNS {
+                let x = xl + (xr - xl) * k as f32 / SOFT_COLUMNS as f32;
+                mesh.vertices.push(vertex(x, y));
+            }
+        }
+        let stride = (SOFT_COLUMNS + 1) as u32;
+        for row in 0..self.rows.len() - 1 {
+            for column in 0..SOFT_COLUMNS {
+                let a = row as u32 * stride + column as u32;
+                let below = a + stride;
+                mesh.add_triangle(a, below, a + 1);
+                mesh.add_triangle(a + 1, below, below + 1);
+            }
+        }
+        mesh
+    }
+
+    /// A painter built from scratch, not `ui.painter().with_clip_rect(card)`: that *intersects*
+    /// with the ui's clip, which inside a scroll area is the viewport, inset by the card's side
+    /// padding — so the wash was clipped at the sides and left a bare strip of panel colour down
+    /// each edge. This one is clipped to the card and nothing else, and the card never reaches
+    /// past the panel it lives in.
+    fn painter(&self, ui: &egui::Ui) -> egui::Painter {
+        egui::Painter::new(ui.ctx().clone(), ui.layer_id(), self.card)
+    }
+
+    fn paint(&self, ui: &egui::Ui, vertex: impl FnMut(f32, f32) -> egui::epaint::Vertex) {
+        self.painter(ui).add(self.mesh(vertex));
+    }
+}
+
+/// How long a header's colour and blurred cover take to ease in once they have arrived.
+const HEADER_TINT_SECS: f32 = 0.5;
+/// How long a header's cover takes to fade in.
+const HEADER_ART_SECS: f32 = 0.3;
+/// How long the colour waits for the blurred cover, whose download can fail on its own.
+const HEADER_BACKDROP_WAIT: f64 = 1.0;
+
+/// What a page's header shows of its cover so far: the colour and the blurred cover, each with
+/// how far it has eased in. Empty until they have arrived, and with the setting off.
+pub(crate) struct HeaderTint {
+    colour: Option<(egui::Color32, f32)>,
+    backdrop: Option<(egui::TextureHandle, f32)>,
+}
+
+/// Whether the colour can start: with the blurred cover, so the two come in as one movement rather
+/// than one after the other, or alone once that has taken too long.
+fn tint_ready(colour: bool, backdrop: bool, waited: f64) -> bool {
+    colour && (backdrop || waited >= HEADER_BACKDROP_WAIT)
+}
+
+/// Look up a page's [`HeaderTint`], asking for the blurred cover. One already in the cache shows
+/// at once, since an animation starts at its target the first time it is asked; one that arrives
+/// while the page is up eases in.
+pub(crate) fn header_tint(
+    app: &mut crate::app::App,
+    ctx: &egui::Context,
+    art_url: Option<&Arc<str>>,
+) -> HeaderTint {
+    let adaptive = app.settings.adaptive_art_color;
+    let colour = header_wash_colour(app, art_url);
+    let wanted = art_url.filter(|_| adaptive);
+    let texture = art_texture_backdrop(&mut app.images, &app.backend, wanted).cloned();
+    let now = ctx.input(|i| i.time);
+    let asked: f64 = ctx.data_mut(|d| {
+        *d.get_temp_mut_or_insert_with(egui::Id::new(("header-tint-asked", art_url)), || now)
+    });
+    let waited = now - asked;
+    if adaptive && colour.is_some() && texture.is_none() && waited < HEADER_BACKDROP_WAIT {
+        ctx.request_repaint_after_secs((HEADER_BACKDROP_WAIT - waited) as f32);
+    }
+    let ease = |part: &'static str, ready: bool| {
+        ctx.animate_bool_with_time_and_easing(
+            egui::Id::new(("header-tint", part, art_url)),
+            ready,
+            HEADER_TINT_SECS,
+            egui::emath::easing::cubic_in_out,
+        )
+    };
+    let colour_shown = ease(
+        "colour",
+        tint_ready(colour.is_some(), texture.is_some(), waited),
+    );
+    let backdrop_shown = ease("backdrop", texture.is_some());
+    HeaderTint {
+        colour: colour.map(|c| (c, colour_shown)),
+        backdrop: texture.map(|t| (t, backdrop_shown)),
+    }
+}
+
+/// A cover's colour for the tint, once it has been decoded: nothing before that and nothing with
+/// the setting off, never a stand-in that would show first and then change.
 pub(crate) fn header_wash_colour(
     app: &crate::app::App,
     art_url: Option<&std::sync::Arc<str>>,
-) -> egui::Color32 {
-    if app.settings.adaptive_art_color
-        && let Some(url) = art_url
-        && let Some([r, g, b]) = app.images.dominant(url)
-    {
-        egui::Color32::from_rgb(r, g, b)
-    } else {
-        app.palette.accent
-    }
+) -> Option<egui::Color32> {
+    art_colour(
+        app.settings.adaptive_art_color,
+        art_url.and_then(|url| app.images.dominant(url)),
+    )
+}
+
+fn art_colour(enabled: bool, dominant: Option<[u8; 3]>) -> Option<egui::Color32> {
+    dominant
+        .filter(|_| enabled)
+        .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
 }
 
 /// What a detail header is built from. Album and playlist fill all of it; the artist page
@@ -2070,17 +2218,29 @@ pub(crate) fn page_header(
         ui.cursor().min + egui::vec2(0.0, theme::HEADER_TOP_PAD),
         egui::vec2(art_size, art_size),
     );
-    widgets::paint_art(
-        ui,
-        palette,
-        art_rect,
-        art,
-        if h.circle {
-            widgets::ArtShape::Circle
-        } else {
-            widgets::ArtShape::Square
-        },
+    let shape = if h.circle {
+        widgets::ArtShape::Circle
+    } else {
+        widgets::ArtShape::Square
+    };
+    // A cover on its way leaves the slot plain and fades in when it comes. The disc is for a page
+    // with no cover: here it would show for a moment and be replaced. One already loaded shows at
+    // once, as an animation starts at its target the first time it is asked.
+    let art_shown = ui.ctx().animate_bool_with_time_and_easing(
+        egui::Id::new(("header-art", h.art_url)),
+        art.is_some(),
+        HEADER_ART_SECS,
+        egui::emath::easing::cubic_in_out,
     );
+    if art.is_none() && h.art_url.is_some() {
+        ui.painter().rect_filled(
+            art_rect,
+            shape.radius(art_rect),
+            palette.glass(palette.surface),
+        );
+    } else {
+        widgets::paint_art_faded(ui, palette, art_rect, art, shape, art_shown);
+    }
 
     let gutter = 20.0;
     let tx = art_rect.right() + gutter;
@@ -3351,36 +3511,38 @@ pub(crate) mod tips {
 mod tests {
     use super::*;
 
-    const ROW: f32 = 56.0;
-
-    /// The wash's ramp: full strength where the header starts, gone where it ends, and never
-    /// brightening on the way down. The top stop is what fills the card's top margin, so a
-    /// value there that was already fading would put the seam back.
+    /// A header's fade starts whole, ends at nothing, only ever falls, and never falls
+    /// faster than it starts. Its edge is curved: at one height, the far side of the card is
+    /// further out of the glow than the side the cover is on.
     #[test]
-    fn the_wash_starts_at_full_strength_and_ends_at_nothing() {
-        let panel = egui::Color32::from_rgb(20, 20, 24);
-        let wash = egui::Color32::from_rgb(200, 40, 90);
-        assert_eq!(
-            wash_stop(panel, wash, 0.0, 1.0),
-            panel.lerp_to_gamma(wash, 0.38)
-        );
-        assert_eq!(
-            wash_stop(panel, wash, 1.0, 1.0).a(),
-            0,
-            "the foot must be gone"
-        );
-        // Clamped: above the header the colour holds rather than inverting.
-        assert_eq!(
-            wash_stop(panel, wash, -0.5, 1.0),
-            wash_stop(panel, wash, 0.0, 1.0)
-        );
-        let mut last = 255;
-        for i in 0..=10 {
-            let a = wash_stop(panel, wash, i as f32 / 10.0, 1.0).a();
-            assert!(a <= last, "alpha rose at {i}: {a} after {last}");
-            last = a;
-        }
+    fn the_header_fades_gently_and_not_in_a_straight_line() {
+        assert_eq!(soft_fade(0.0), 1.0);
+        assert_eq!(soft_fade(1.0), 0.0);
+        assert!(soft_fade(0.95) < 0.01);
+        let step = |i: usize| soft_fade(i as f32 / 100.0) - soft_fade((i + 1) as f32 / 100.0);
+        assert!((0..100).all(|i| step(i) >= 0.0 && step(i) <= step(0) + 1e-4));
+        assert!(soft_distance(1.0, 0.5) > soft_distance(SOFT_ORIGIN_X, 0.5) + 0.05);
     }
+
+    /// A header has no colour until its cover's is known, rather than something bright first.
+    #[test]
+    fn a_header_has_no_colour_until_the_covers_is_known() {
+        let cover = egui::Color32::from_rgb(1, 2, 3);
+        assert_eq!(art_colour(true, None), None);
+        assert_eq!(art_colour(true, Some([1, 2, 3])), Some(cover));
+        assert_eq!(art_colour(false, Some([1, 2, 3])), None);
+    }
+
+    /// The colour comes in with the blurred cover, and doesn't wait for it for good.
+    #[test]
+    fn the_colour_waits_a_while_for_the_blurred_cover() {
+        assert!(!tint_ready(false, true, 0.0));
+        assert!(!tint_ready(true, false, 0.0));
+        assert!(tint_ready(true, true, 0.0));
+        assert!(tint_ready(true, false, HEADER_BACKDROP_WAIT));
+    }
+
+    const ROW: f32 = 56.0;
 
     /// A viewport that fits the whole list must draw the whole list — the case that made the
     /// first live measurement look like a bug when it was not.

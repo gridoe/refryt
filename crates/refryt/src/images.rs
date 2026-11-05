@@ -153,6 +153,16 @@ impl Images {
         self.texture_inner(url, px, true, sized_url_hero, &mut want)
     }
 
+    /// The now-playing view's blurred backdrop for a cover. Fetched small, as there is no detail
+    /// left to keep, and its own cache entry through [`BACKDROP_PX`].
+    pub fn texture_backdrop(
+        &mut self,
+        url: &Arc<str>,
+        mut want: impl FnMut(Arc<str>, String, u32, bool),
+    ) -> Option<&TextureHandle> {
+        self.texture_inner(url, BACKDROP_PX, false, sized_backdrop_url, &mut want)
+    }
+
     fn texture_inner(
         &mut self,
         url: &Arc<str>,
@@ -345,6 +355,75 @@ fn sized_url_aspect(url: &str, w: u32, aspect: f32) -> String {
     format!("{base}={}", rewritten.join("-"))
 }
 
+/// The cache's size key for a backdrop. Cover sizes are multiples of 32, so this one is never
+/// a real cover's and the two never share an entry.
+pub const BACKDROP_PX: u32 = 97;
+/// The side a backdrop is blurred and kept at. Stretched across a screen it stays smooth, as the
+/// blur leaves nothing finer than a few of its pixels.
+const BACKDROP_SIDE: u32 = 96;
+/// The blur's sigma, in the backdrop's own pixels.
+const BACKDROP_BLUR: f32 = 11.0;
+/// How far the colours are pushed from grey: blurring averages them toward mud.
+const BACKDROP_SATURATION: f32 = 1.3;
+/// The brightness every backdrop is brought to on average, 0 to 255, so a nearly black sleeve
+/// still gives a colour and a nearly white one doesn't blind the words on it.
+const BACKDROP_LEVEL: f32 = 105.0;
+/// The most a dark cover is lifted. A black sleeve stays dark rather than turning its noise up.
+const BACKDROP_MAX_GAIN: f32 = 5.0;
+/// The brightest any part of a backdrop may be, 0 to 255, for a cover with a hot spot.
+const BACKDROP_PEAK: f32 = 160.0;
+
+fn sized_backdrop_url(url: &str, _px: u32) -> String {
+    sized_url(url, 128)
+}
+
+/// Decode a cover into the now-playing view's backdrop: small, heavily blurred, a little more
+/// saturated and brought to a common brightness. Runs on a worker thread. The dominant colour is read before the blur, so it is the
+/// same colour the cover's other sizes report.
+pub fn decode_backdrop(bytes: &[u8]) -> anyhow::Result<(ColorImage, [u8; 3])> {
+    let rgba = image::load_from_memory(bytes)?
+        .resize_to_fill(
+            BACKDROP_SIDE,
+            BACKDROP_SIDE,
+            image::imageops::FilterType::Triangle,
+        )
+        .to_rgba8();
+    let dominant = dominant_from_pixels(
+        rgba.as_raw()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&[r, g, b, _]| [r, g, b]),
+    );
+    let mut blurred = image::imageops::blur(&rgba, BACKDROP_BLUR);
+    let count = blurred.pixels().len().max(1) as f32;
+    let mean = blurred.pixels().map(|p| luma(p.0)).sum::<f32>() / count;
+    let gain = (BACKDROP_LEVEL / mean.max(1.0)).min(BACKDROP_MAX_GAIN);
+    for pixel in blurred.pixels_mut() {
+        pixel.0 = backdrop_pixel(pixel.0, gain);
+    }
+    let image = ColorImage::from_rgba_unmultiplied(
+        [blurred.width() as usize, blurred.height() as usize],
+        blurred.as_raw(),
+    );
+    Ok((image, dominant))
+}
+
+/// A pixel's brightness, 0 to 255.
+fn luma([r, g, b, _]: [u8; 4]) -> f32 {
+    0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)
+}
+
+/// One blurred pixel brought to the backdrop's level and saturation, and held under its peak.
+fn backdrop_pixel(pixel: [u8; 4], gain: f32) -> [u8; 4] {
+    let grey = luma(pixel) * gain;
+    let channel = |v: u8| grey + (f32::from(v) * gain - grey) * BACKDROP_SATURATION;
+    let [r, g, b] = [channel(pixel[0]), channel(pixel[1]), channel(pixel[2])];
+    let hold = (BACKDROP_PEAK / grey.max(1.0)).min(1.0);
+    let out = |v: f32| (v * hold).round().clamp(0.0, 255.0) as u8;
+    [out(r), out(g), out(b), 255]
+}
+
 /// Decode image bytes into an egui image plus a dominant colour, both sized for our use.
 ///
 /// Runs on a worker thread. The returned `ColorImage` fits inside a `px` box with its aspect
@@ -427,6 +506,39 @@ fn dominant_from_pixels(pixels: impl Iterator<Item = [u8; 3]>) -> [u8; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A backdrop is the blurred size whatever comes in, opaque, and has lost the cover's edges:
+    /// the two halves of a sharp cover meet in a blend.
+    #[test]
+    fn a_backdrop_is_small_and_blurred() {
+        let (w, h) = (300u32, 200u32);
+        let cover = image::RgbaImage::from_fn(w, h, |x, _| {
+            if x < w / 2 {
+                image::Rgba([220, 40, 40, 255])
+            } else {
+                image::Rgba([40, 40, 220, 255])
+            }
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        cover
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("encode");
+        let (image, _) = decode_backdrop(bytes.get_ref()).expect("decode");
+        assert_eq!(image.size, [96, 96]);
+        let middle = image.pixels[48 * 96 + 48];
+        assert_eq!(middle.a(), 255);
+        assert!(middle.r() > 60 && middle.b() > 60, "{middle:?}");
+    }
+
+    /// Dark and bright covers come out in the same range: a dark one lifted, keeping its colour,
+    /// and a white one held down.
+    #[test]
+    fn backdrops_are_brought_to_a_common_brightness() {
+        let lifted = backdrop_pixel([40, 8, 8, 255], 4.0);
+        assert!(lifted[0] > 120 && lifted[0] > lifted[1] * 2, "{lifted:?}");
+        let white = backdrop_pixel([255, 255, 255, 255], 1.0);
+        assert!(luma(white) <= BACKDROP_PEAK + 1.0, "{white:?}");
+    }
 
     #[test]
     fn rewrites_the_youtube_size_suffix() {

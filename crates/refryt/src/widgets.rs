@@ -528,6 +528,38 @@ pub fn paint_art(
     texture: Option<&egui::TextureHandle>,
     shape: ArtShape,
 ) {
+    paint_art_faded(ui, palette, rect, texture, shape, 1.0);
+}
+
+/// A cover fading in over what is already in its slot, with no backing of its own.
+pub fn paint_art_over(
+    ui: &Ui,
+    rect: Rect,
+    texture: &egui::TextureHandle,
+    shape: ArtShape,
+    shown: f32,
+) {
+    let size = texture.size_vec2();
+    let scale = (rect.width() / size.x).min(rect.height() / size.y);
+    let fitted = Rect::from_center_size(rect.center(), size * scale);
+    egui::Image::new(texture)
+        .corner_radius(match shape {
+            ArtShape::Circle => shape.radius(rect),
+            _ => inner_radius(shape.radius(rect), rect, fitted),
+        })
+        .tint(egui::Color32::WHITE.gamma_multiply(shown))
+        .paint_at(ui, fitted);
+}
+
+/// [`paint_art`] with the image `shown` of the way in over its slot.
+pub fn paint_art_faded(
+    ui: &Ui,
+    palette: &Palette,
+    rect: Rect,
+    texture: Option<&egui::TextureHandle>,
+    shape: ArtShape,
+    shown: f32,
+) {
     match texture {
         Some(tex) => {
             let radius = shape.radius(rect);
@@ -551,6 +583,7 @@ pub fn paint_art(
             };
             egui::Image::new(tex)
                 .corner_radius(image_radius)
+                .tint(egui::Color32::WHITE.gamma_multiply(shown))
                 .paint_at(ui, fitted);
         }
         None => art_placeholder(ui, palette, rect, shape),
@@ -919,6 +952,12 @@ const MARQUEE_END_HOLD_SECS: f64 = 1.5;
 /// The click/hover height of a marquee line — the player bar's title uses it for its hit rect
 /// when the text fits and `marquee_line` draws no viewport of its own.
 pub(crate) const MARQUEE_HIT_H: f32 = 18.0;
+
+/// A marquee's height for its font: [`MARQUEE_HIT_H`] for the list sizes it was set for, and
+/// enough for the line at the now-playing view's larger ones, which it would cut otherwise.
+fn marquee_height(font: &egui::FontId) -> f32 {
+    MARQUEE_HIT_H.max(font.size * 1.35)
+}
 
 /// How deep each edge of a scrolling line dissolves, `(lead, trail)` from 0 (solid) to 1 (fully
 /// faded at the edge): in proportion to how much of the line is hidden past that edge, up to one
@@ -1317,6 +1356,16 @@ pub(crate) fn edge_fades(scroll: (f32, f32, f32), fade: f32) -> (f32, f32) {
     (above, below)
 }
 
+impl EdgeFade {
+    /// The fade for an end of a scrolled list with `hidden` points of it past that end: fully
+    /// transparent at the edge, over a band that grows with what is hidden, up to `band`. With
+    /// nothing hidden there is no fade, so the first line shows whole. A strength rising with the
+    /// scroll instead leaves the edge nearly opaque at first, and the clip cuts a line in two.
+    pub(crate) fn for_hidden(hidden: f32, band: f32) -> Self {
+        Self::eased((hidden.max(0.0) * 3.0).min(band), 1.0)
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Card corners
 // ---------------------------------------------------------------------------------------------
@@ -1561,12 +1610,13 @@ pub fn marquee_line(
     row_hovered: bool,
 ) -> Option<egui::Response> {
     let full = text_width(ui, text, &font);
+    let height = marquee_height(&font);
     if full <= max_width {
         // Clipped to the slot even though it measured as fitting: a measuring mistake must not
         // paint over whatever sits past the text's own room.
         let slot = Rect::from_min_max(
-            egui::pos2(pos.x, pos.y - MARQUEE_HIT_H),
-            egui::pos2(pos.x + max_width, pos.y + MARQUEE_HIT_H),
+            egui::pos2(pos.x, pos.y - height),
+            egui::pos2(pos.x + max_width, pos.y + height),
         )
         .intersect(ui.clip_rect());
         crate::emoji::paint_clipped_line(ui, slot, pos, text, font, color);
@@ -1574,8 +1624,8 @@ pub fn marquee_line(
     }
     let id = ui.id().with(id_salt);
     let viewport = Rect::from_min_size(
-        egui::pos2(pos.x, pos.y - MARQUEE_HIT_H / 2.0),
-        vec2(max_width, MARQUEE_HIT_H),
+        egui::pos2(pos.x, pos.y - height / 2.0),
+        vec2(max_width, height),
     );
     let response = ui.interact(viewport, id, sense);
     // Geometric, not `hovered()`: see `paint_subtitle_marquee`.
@@ -1730,8 +1780,8 @@ pub fn paint_subtitle_marquee<'a>(
 
     let id = ui.id().with(id_salt);
     let viewport = Rect::from_min_size(
-        egui::pos2(pos.x, pos.y - MARQUEE_HIT_H / 2.0),
-        vec2(max_width, MARQUEE_HIT_H),
+        egui::pos2(pos.x, pos.y - marquee_height(&font) / 2.0),
+        vec2(max_width, marquee_height(&font)),
     );
     let over_view = ui.interact(viewport, id, Sense::hover()).contains_pointer();
     let now = ui.input(|i| i.time);
@@ -5402,6 +5452,19 @@ pub fn volume_slider(ui: &mut Ui, palette: &Palette, volume: f64, unmute_to: f64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A list scrolled a little is already transparent at its edge, over a short band; nothing
+    /// hidden means no fade at all; a long way in, the band stops at its full size.
+    #[test]
+    fn a_scrolled_edge_never_cuts_a_line() {
+        let band = 220.0;
+        assert!(EdgeFade::for_hidden(0.0, band).none());
+        let little = EdgeFade::for_hidden(10.0, band);
+        let f = |y| fade_factor(y, 0.0, 500.0, little, EdgeFade::new(0.0, 0.0));
+        assert!(f(0.0) < 0.01);
+        assert!(f(30.0) > 0.99);
+        assert_eq!(EdgeFade::for_hidden(1000.0, band).band, band);
+    }
 
     /// The fade runs from fully transparent at an edge to untouched a band in, scaled by how
     /// strongly that end fades, and an end that does not fade is left alone.
