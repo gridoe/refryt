@@ -47,7 +47,7 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
         }
         // The listener's own songs still to come, then the radio after them under its own
         // "Autoplay" header, as the site splits them. With none of theirs left — a mix, a song's
-        // radio, a playlist played out — the radio is simply what's next up.
+        // radio, a playlist played out — only that header shows.
         let own = app
             .q
             .chosen_before_radio(app.repeat, app.radio.as_ref().map(|r| &r.chosen))
@@ -55,7 +55,7 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
         let (mine, radio) = upcoming.split_at(own);
         let mut picks = Vec::new();
         if mine.is_empty() {
-            next_up(app, ui, "Next up", true, false);
+            next_up(app, ui, "Autoplay", true, false);
             picks.push((rows(app, ui, radio), radio));
         } else {
             next_up(app, ui, "Next up", false, true);
