@@ -641,8 +641,13 @@ fn draw(app: &mut App, ui: &mut egui::Ui) {
         app.fs.touch();
     }
 
+    let adaptive = app.settings.adaptive_art_color;
     let Some(track) = app.now.track.as_ref() else {
-        wash_background(ui, &p, screen, p.window, radius);
+        if adaptive {
+            wash_background(ui, &p, screen, p.window, radius);
+        } else {
+            plain_background(ui, &p, screen, radius);
+        }
         return;
     };
     let art_url = track.thumbnail.clone();
@@ -658,8 +663,12 @@ fn draw(app: &mut App, ui: &mut egui::Ui) {
         app.fs.tint.unwrap_or(p.window),
         if was.is_none() { 0.0 } else { TINT_SECS },
     );
-    wash_background(ui, &p, screen, tint, radius);
-    paint_backdrop(app, ui, screen, radius, art_url.as_ref());
+    if adaptive {
+        wash_background(ui, &p, screen, tint, radius);
+        paint_backdrop(app, ui, screen, radius, art_url.as_ref());
+    } else {
+        plain_background(ui, &p, screen, radius);
+    }
 
     // This view's own placeholders time themselves off the lyrics request, not off a page load
     // (the shell is not drawn, so nothing else is using the timer this frame).
@@ -1087,7 +1096,18 @@ fn wash_background(
 ) {
     let (top, bottom) = wash(p, tint);
     gradient(ui, screen, radius, top, bottom);
-    // Kept in the window it is a card, with the cards' own hairline where the theme draws one.
+    card_edge(ui, p, screen, radius);
+}
+
+/// With Adaptive colour off the view is a card like the pages, in the same colours.
+fn plain_background(ui: &egui::Ui, p: &theme::Palette, screen: Rect, radius: CornerRadius) {
+    ui.painter().rect_filled(screen, radius, p.window_fill());
+    ui.painter().rect_filled(screen, radius, p.card_fill());
+    card_edge(ui, p, screen, radius);
+}
+
+/// Kept in the window the view is a card, with the cards' own hairline where the theme draws one.
+fn card_edge(ui: &egui::Ui, p: &theme::Palette, screen: Rect, radius: CornerRadius) {
     if radius != CornerRadius::ZERO
         && let Some(edge) = p.card_edge()
     {
