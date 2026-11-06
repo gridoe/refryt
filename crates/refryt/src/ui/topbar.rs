@@ -33,6 +33,10 @@ const RIGHT_GAP: f32 = 20.0;
 /// Back + Forward and the gaps around them, the fixed part left of the search pill.
 const LEFT_W: f32 = 32.0 + 4.0 + 32.0 + 12.0;
 
+/// The History and Stats icons, and the width of the button around each.
+const TOP_ICON_PT: f32 = 18.0;
+const TOP_ICON_W: f32 = TOP_ICON_PT + 14.0;
+
 pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
     let p = app.palette;
     let rect = ui.available_rect_before_wrap();
@@ -63,20 +67,30 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
     // leads to the sign-in window on Windows and to Settings' browser import elsewhere, but
     // the menu itself no longer differs by platform. Button-anchored: `Toggle` records no
     // pointer position, so a pointer-anchored popup would never render.
-    account_menu(app, &mut right, &chip, signed_in);
+    // Stats gives its place up before the search would run over it, and waits under the chip.
+    let spacing = right.spacing().item_spacing.x;
+    let left = if app.lights_over_rail() {
+        (app.traffic_lights_right() + 14.0 - rect.left()).max(0.0)
+    } else {
+        0.0
+    };
+    let stats_fits = right.available_width() - 2.0
+        >= 2.0 * (TOP_ICON_W + spacing) + RIGHT_GAP + MIN_SEARCH_W + LEFT_W + left;
+    account_menu(app, &mut right, &chip, signed_in, !stats_fits);
     right.add_space(2.0);
     // Listening history beside the chip, as a clock — it is a page, not a setting.
     // Settings itself lives only under the chip, which carries it in every state. One door,
     // one keyhole — a second gear beside the chip was two doors to the same room.
-    if widgets::icon_button(&mut right, &p, Icon::History, 18.0, false)
+    if widgets::icon_button(&mut right, &p, Icon::History, TOP_ICON_PT, false)
         .hint(crate::ui::tips::HISTORY)
         .clicked()
     {
         app.navigate(Route::History);
     }
-    if widgets::icon_button(&mut right, &p, Icon::ChartColumn, 18.0, false)
-        .hint(crate::ui::tips::STATS)
-        .clicked()
+    if stats_fits
+        && widgets::icon_button(&mut right, &p, Icon::ChartColumn, TOP_ICON_PT, false)
+            .hint(crate::ui::tips::STATS)
+            .clicked()
     {
         app.navigate(Route::Stats);
     }
@@ -647,7 +661,13 @@ fn avatar_circle(app: &mut App, ui: &mut Ui, name: Option<&str>) -> egui::Respon
 /// its photo and a tick on the current one — then Settings and Sign out; signed out, Log in and
 /// Settings. Log in opens the sign-in window on Windows and navigates to Settings' browser
 /// import everywhere else.
-fn account_menu(app: &mut App, ui: &mut Ui, chip: &egui::Response, signed_in: bool) {
+fn account_menu(
+    app: &mut App,
+    ui: &mut Ui,
+    chip: &egui::Response,
+    signed_in: bool,
+    stats_in_menu: bool,
+) {
     let popup = egui::Popup::new(
         ui.id().with("ytm-account-menu"),
         ui.ctx().clone(),
@@ -666,6 +686,7 @@ fn account_menu(app: &mut App, ui: &mut Ui, chip: &egui::Response, signed_in: bo
         LogIn,
         Profile(String),
         Switch(Option<String>),
+        Stats,
         Settings,
         Help,
         SignOut,
@@ -783,6 +804,11 @@ fn account_menu(app: &mut App, ui: &mut Ui, chip: &egui::Response, signed_in: bo
             choice = Some(Choice::Profile(id));
             mui.close();
         }
+        if stats_in_menu && widgets::menu_item(mui, &p, Icon::ChartColumn, "Stats", None).clicked()
+        {
+            choice = Some(Choice::Stats);
+            mui.close();
+        }
         if widgets::menu_item(mui, &p, Icon::Settings, "Settings", None).clicked() {
             choice = Some(Choice::Settings);
             mui.close();
@@ -804,6 +830,7 @@ fn account_menu(app: &mut App, ui: &mut Ui, chip: &egui::Response, signed_in: bo
             app.update_settings(&ctx, |s| s.account_page_id = page_id);
             app.forget_account_data();
         }
+        Some(Choice::Stats) => app.navigate(Route::Stats),
         Some(Choice::Settings) => app.navigate(Route::Settings),
         Some(Choice::Help) => app.help_open = true,
         Some(Choice::SignOut) => app.backend.sign_out(),

@@ -1787,7 +1787,7 @@ pub(crate) fn artist_shelf(app: &mut crate::app::App, ui: &mut egui::Ui, shelf: 
 /// "Show all", low-key — plain text with a hover underline, not a button, so a shelf's heading
 /// doesn't compete with its own title for attention. Kept shorter than the title's own line so
 /// it never grows the heading row `artist_shelf` builds around it.
-fn shelf_show_all(ui: &mut egui::Ui, palette: &theme::Palette) -> egui::Response {
+pub(crate) fn shelf_show_all(ui: &mut egui::Ui, palette: &theme::Palette) -> egui::Response {
     let font = theme::regular(12.0);
     let text = "Show all";
     let w = widgets::text_width(ui, text, &font);
@@ -3042,6 +3042,11 @@ fn entry_rows_with(
                 let mut spec = entry_row_spec(&items[i], now, library, signed_in);
                 if let Some(rank) = ranks.get(i) {
                     spec.rank = Some(rank);
+                    // A ranked row is about its count: in a narrow column the album would push
+                    // the plays out of sight.
+                    if let Entry::Song(t) | Entry::Video(t) = &items[i] {
+                        spec.subtitle = track_subtitle_inner(t, true);
+                    }
                 }
                 spec
             },
@@ -3409,47 +3414,115 @@ fn offline_page(
     }
 }
 
+/// A notice across the top of a page, in the same card as the Stats tiles: an icon in a tinted
+/// circle, a title with a line of detail under it, and `actions` drawn right to left from the card's
+/// right edge. In a narrow window the words give way, the least needed first: the detail, then the
+/// icon.
+pub(crate) fn page_strip(
+    ui: &mut egui::Ui,
+    p: &theme::Palette,
+    icon: crate::icons::Icon,
+    tint: egui::Color32,
+    title: &str,
+    detail: &str,
+    actions: impl FnOnce(&mut egui::Ui),
+) {
+    const HEIGHT: f32 = 56.0;
+    const PADDING: f32 = 12.0;
+    const BADGE: f32 = 32.0;
+    const BADGE_GAP: f32 = 12.0;
+    const ACTIONS_GAP: f32 = 12.0;
+
+    // A second strip sits under the first one's own gap.
+    if ui.min_rect().height() < 1.0 {
+        ui.add_space(12.0);
+    }
+    // A fixed height, painted by hand: a `Frame` takes the height its parent offers, and on a page
+    // laid out to fill (Settings) it grew into a pale slab across the whole card.
+    let (strip, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), HEIGHT),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(
+        strip,
+        egui::CornerRadius::same(theme::radii().popup),
+        crate::widgets::group_fill(p),
+    );
+    let inner = strip.shrink2(egui::vec2(PADDING, 0.0));
+
+    // The buttons first: what's left of them decides how much of the rest fits.
+    let mut buttons = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    actions(&mut buttons);
+    let right = buttons.min_rect().left() - ACTIONS_GAP;
+
+    let title_font = theme::semibold(13.0);
+    let detail_font = theme::regular(12.0);
+    let title_width = crate::widgets::text_width(ui, title, &title_font);
+    let mut left = inner.left();
+    if left + BADGE + BADGE_GAP + title_width <= right {
+        let badge = egui::Rect::from_center_size(
+            egui::pos2(left + BADGE / 2.0, inner.center().y),
+            egui::Vec2::splat(BADGE),
+        );
+        ui.painter()
+            .circle_filled(badge.center(), BADGE / 2.0, tint.gamma_multiply(0.14));
+        icon.image(tint, 18.0).paint_at(
+            ui,
+            egui::Rect::from_center_size(badge.center(), egui::Vec2::splat(18.0)),
+        );
+        left += BADGE + BADGE_GAP;
+    }
+    let middle = inner.center().y;
+    let painter = ui.painter();
+    if left + crate::widgets::text_width(ui, detail, &detail_font) <= right {
+        painter.text(
+            egui::pos2(left, middle + 1.0),
+            egui::Align2::LEFT_BOTTOM,
+            title,
+            title_font,
+            p.text,
+        );
+        painter.text(
+            egui::pos2(left, middle + 1.0),
+            egui::Align2::LEFT_TOP,
+            detail,
+            detail_font,
+            p.secondary,
+        );
+    } else {
+        painter.text(
+            egui::pos2(left, middle),
+            egui::Align2::LEFT_CENTER,
+            title,
+            title_font,
+            p.text,
+        );
+    }
+    ui.add_space(PAGE_STRIP_AFTER);
+}
+
+/// The space between a page strip and the page.
+const PAGE_STRIP_AFTER: f32 = 10.0;
+
 /// The strip across the top of the page while the app has no connection, on pages that did load
 /// (or loaded before it went): what is going on, and the one place that still works. A page that
 /// could not load at all says it in full instead, so the strip steps aside there.
 pub(crate) fn offline_banner(app: &mut crate::app::App, ui: &mut egui::Ui) {
     let p = app.palette;
     let mut open = false;
-    ui.add_space(12.0);
-    // A fixed-height strip, painted by hand: a `Frame` takes the height its parent offers, and on
-    // a page laid out to fill (Settings) it grew into a pale slab across the whole card.
-    // Tall enough for the Downloads button to sit inside it with the same 4pt all round, its
-    // round ends nested in the strip's.
-    let (strip, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
-    ui.painter()
-        .rect_filled(strip, theme::pill(strip), p.glass(p.surface));
-    let mut row = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(strip.shrink2(egui::vec2(14.0, 0.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    page_strip(
+        ui,
+        &p,
+        crate::icons::Icon::WifiOff,
+        p.warning,
+        "You're offline",
+        "Downloaded songs still play.",
+        |ui| open = crate::widgets::outline_button(ui, &p, "Downloads").clicked(),
     );
-    let (slot, _) = row.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
-    crate::icons::Icon::WifiOff
-        .image(p.secondary, 16.0)
-        .paint_at(&row, slot);
-    row.add_space(4.0);
-    row.label(
-        egui::RichText::new("You're offline")
-            .font(theme::semibold(13.0))
-            .color(p.text),
-    );
-    row.label(
-        egui::RichText::new("Downloaded songs still play.")
-            .font(theme::regular(13.0))
-            .color(p.secondary),
-    );
-    row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        // From the strip's 14pt padding back to 4pt off its right edge, as above and below.
-        ui.add_space(-10.0);
-        open = crate::widgets::outline_button(ui, &p, "Downloads").clicked();
-    });
-    ui.add_space(10.0);
     if open {
         app.rail_filter = crate::app::RailFilter::Downloads;
         app.navigate(Route::Library);

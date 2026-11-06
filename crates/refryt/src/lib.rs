@@ -54,6 +54,7 @@ pub mod queue;
 pub mod search_history;
 pub mod settings;
 pub mod stats;
+pub mod takeout;
 pub mod theme;
 pub mod tray;
 pub mod ui;

@@ -3,29 +3,36 @@
 use chrono::{Datelike, NaiveDate};
 use egui::{Align2, CornerRadius, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 
-use crate::app::App;
+use crate::app::{App, Route};
 use crate::icons::Icon;
-use crate::listening_stats::{Bar, Delta, Report, StatsRange, listening_time, plays_label};
+use crate::listening_stats::{
+    Bar, Delta, Report, StatsRange, TopList, listening_time, plays_label,
+};
 use crate::theme;
 use crate::ui::{centered, failed, page_title, section};
 use crate::widgets;
 
-/// How many rows a top list shows before "Show more".
-const TOP_SHOWN: usize = 10;
+/// How many rows a top list shows on the Stats page.
+const TOP_SHOWN: usize = 5;
+/// Below this two lists side by side would cut off too much of each row, so they stack.
+const TWO_COLUMNS_WIDTH: f32 = 680.0;
+const COLUMN_GAP: f32 = 24.0;
 const TILE_HEIGHT: f32 = 84.0;
 const TILE_GAP: f32 = 12.0;
 /// Below this a row of four tiles gets cramped, so they go two by two.
-const FOUR_TILES_WIDTH: f32 = 560.0;
+const FOUR_TILES_WIDTH: f32 = 720.0;
+/// A tile's number, and how far it shrinks before it would overflow the tile.
+const TILE_VALUE_PT: f32 = 22.0;
+const TILE_VALUE_MIN_PT: f32 = 14.0;
 const CHART_HEIGHT: f32 = 140.0;
 const CALENDAR_GAP: f32 = 3.0;
 const CALENDAR_MIN_CELL: f32 = 5.0;
 const CALENDAR_MAX_CELL: f32 = 16.0;
 const CALENDAR_WEEKS: usize = 53;
 const CALENDAR_PADDING: f32 = 16.0;
-/// The room for the line over the grid, the month names, and the legend under it.
+/// The room for the line over the grid and the month names.
 const CALENDAR_HEADER: f32 = 28.0;
 const CALENDAR_MONTHS: f32 = 18.0;
-const CALENDAR_FOOTER: f32 = 28.0;
 /// The room left of the grid for Mon, Wed and Fri.
 const CALENDAR_DAY_LABELS: f32 = 30.0;
 /// About how wide a month's name is.
@@ -69,9 +76,7 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         } else {
             ui.add_space(16.0);
             totals(app, ui, &report);
-            top_list(app, ui, "Top songs", 0, &report.top_songs);
-            top_list(app, ui, "Top artists", 1, &report.top_artists);
-            top_list(app, ui, "Top albums", 2, &report.top_albums);
+            top_lists(app, ui, &report);
             if report.bars.len() > 1 {
                 section(ui, &app.palette, "Plays over time");
                 bar_chart(ui, &app.palette, &report.bars);
@@ -108,6 +113,42 @@ fn range_chips(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+/// Offer an import once, in a strip at the top of the Stats page, while nothing has been imported.
+/// It stays until it's answered and isn't made again after that: Settings keeps the way to do it.
+pub(crate) fn takeout_offer(app: &mut App, ui: &mut egui::Ui) {
+    if app.settings.takeout_offer_answered || app.takeout_importing || !app.settings.listening_stats
+    {
+        return;
+    }
+    let Some(imported) = app.stats_report.as_ref().map(|report| report.imported) else {
+        return;
+    };
+    let (mut import, mut dismiss) = (false, imported);
+    if !imported {
+        let p = app.palette;
+        crate::ui::page_strip(
+            ui,
+            &p,
+            Icon::History,
+            p.accent,
+            "Import your history",
+            "From Google Takeout",
+            |buttons| {
+                import = widgets::pill_button(buttons, &p, "Choose file").clicked();
+                dismiss = widgets::outline_button(buttons, &p, "Dismiss").clicked();
+                crate::ui::settings::takeout_help(buttons, &p);
+            },
+        );
+    }
+    if import || dismiss {
+        let ctx = ui.ctx().clone();
+        app.update_settings(&ctx, |s| s.takeout_offer_answered = true);
+    }
+    if import && let Some(file) = crate::ui::settings::takeout_file() {
+        app.import_takeout(file);
+    }
+}
+
 struct Tile {
     label: &'static str,
     value: String,
@@ -126,7 +167,12 @@ fn totals(app: &App, ui: &mut egui::Ui, report: &Report) {
             },
             Tile {
                 label: "Listening time",
-                value: listening_time(report.seconds),
+                // Partly an estimate once an import is in it.
+                value: if report.seconds_estimated {
+                    format!("~{}", listening_time(report.seconds))
+                } else {
+                    listening_time(report.seconds)
+                },
                 delta: report.seconds_delta,
             },
             Tile {
@@ -208,17 +254,32 @@ fn paint_tile(ui: &egui::Ui, p: &theme::Palette, rect: Rect, tile: &Tile) {
         theme::semibold(12.0),
         p.secondary,
     );
+    let size = widgets::fit_size(
+        ui,
+        &tile.value,
+        inner.width(),
+        TILE_VALUE_PT,
+        TILE_VALUE_MIN_PT,
+        theme::bold,
+    );
     painter.text(
         inner.left_bottom(),
         Align2::LEFT_BOTTOM,
         &tile.value,
-        theme::bold(22.0),
+        theme::bold(size),
         p.text,
     );
     let Some(delta) = tile.delta else {
         return;
     };
     let text = delta.percent.map_or("New".to_owned(), |n| format!("{n}%"));
+    // The change is the extra here: with no room beside the label it isn't shown.
+    let label_font = theme::semibold(12.0);
+    let delta_width = widgets::text_width(ui, &text, &label_font)
+        + if delta.percent.is_some() { 18.0 } else { 0.0 };
+    if widgets::text_width(ui, tile.label, &label_font) + 8.0 + delta_width > inner.width() {
+        return;
+    }
     let shown = painter.text(
         inner.right_top(),
         Align2::RIGHT_TOP,
@@ -243,35 +304,86 @@ fn paint_tile(ui: &egui::Ui, p: &theme::Palette, rect: Rect, tile: &Tile) {
     }
 }
 
-fn top_list(
-    app: &mut App,
-    ui: &mut egui::Ui,
-    title: &'static str,
-    which: usize,
-    items: &[crate::model::Entry],
-) {
+/// Top songs and artists, next to each other when both have something to show and there's room.
+fn top_lists(app: &mut App, ui: &mut egui::Ui, report: &Report) {
+    let (songs, artists) = (&report.top_songs, &report.top_artists);
+    if songs.is_empty() || artists.is_empty() || ui.available_width() < TWO_COLUMNS_WIDTH {
+        top_list(app, ui, TopList::Songs, songs);
+        top_list(app, ui, TopList::Artists, artists);
+        return;
+    }
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = COLUMN_GAP;
+        ui.columns(2, |columns| {
+            // The rows inside lay out with the page's own spacing.
+            for column in columns.iter_mut() {
+                column.spacing_mut().item_spacing.x = 8.0;
+            }
+            top_list(app, &mut columns[0], TopList::Songs, songs);
+            top_list(app, &mut columns[1], TopList::Artists, artists);
+        });
+    });
+}
+
+/// The start of a top list, with the way to the rest of it in the heading, as on other shelves.
+fn top_list(app: &mut App, ui: &mut egui::Ui, list: TopList, items: &[crate::model::Entry]) {
     if items.is_empty() {
         return;
     }
-    section(ui, &app.palette, title);
-    let open = app.stats_expanded[which];
-    let shown = if open {
-        items.len()
-    } else {
-        items.len().min(TOP_SHOWN)
-    };
+    let title = list.title();
+    ui.add_space(20.0);
+    let show_all = ui
+        .horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(title)
+                    .font(theme::bold(theme::SECTION_PT))
+                    .color(app.palette.text),
+            );
+            items.len() > TOP_SHOWN
+                && ui
+                    .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        crate::ui::shelf_show_all(ui, &app.palette).clicked()
+                    })
+                    .inner
+        })
+        .inner;
+    ui.add_space(8.0);
     ui.push_id(title, |ui| {
-        crate::ui::ranked_entry_rows(app, ui, &items[..shown]);
+        crate::ui::ranked_entry_rows(app, ui, &items[..items.len().min(TOP_SHOWN)]);
     });
-    if items.len() > TOP_SHOWN {
-        ui.add_space(8.0);
-        let label = if open { "Show less" } else { "Show more" };
-        ui.push_id((title, "more"), |ui| {
-            if widgets::outline_button(ui, &app.palette, label).clicked() {
-                app.stats_expanded[which] = !open;
-            }
-        });
+    if show_all {
+        app.navigate(Route::StatsTop(list));
     }
+}
+
+/// A top list on a page of its own.
+pub fn top_page(app: &mut App, ui: &mut egui::Ui, list: TopList) {
+    let title = list.title();
+    if let Some(error) = app.stats_error.clone() {
+        page_title(ui, &app.palette, title);
+        failed(app, ui, error, App::retry_route);
+        return;
+    }
+    let Some(report) = app.stats_report.clone() else {
+        page_title(ui, &app.palette, title);
+        widgets::skeleton_shelf(ui, &app.palette, widgets::SkeletonShelfShape::Rows, 8);
+        return;
+    };
+    crate::ui::page_scroll(app, title).show(ui, |ui| {
+        page_title(ui, &app.palette, title);
+        range_chips(app, ui);
+        ui.add_space(12.0);
+        let items = match list {
+            TopList::Songs => &report.top_songs,
+            TopList::Artists => &report.top_artists,
+        };
+        if items.is_empty() {
+            quiet_line(app, ui, "Nothing played in this range.");
+        } else {
+            crate::ui::ranked_entry_rows(app, ui, items);
+        }
+        ui.add_space(24.0);
+    });
 }
 
 /// Plays over time. A bar's date and count show on hovering it; the ends are labelled below.
@@ -380,20 +492,26 @@ fn calendar_colour(p: &theme::Palette, level: usize) -> egui::Color32 {
     }
 }
 
-/// The last year in a card: a square a day, a column a week, Monday at the top.
+/// How many weeks fit beside the day labels, and how big their squares can be. Where a whole year
+/// won't fit even at the smallest square, the latest weeks are the ones that stay.
+fn calendar_fit(inner_width: f32) -> (usize, f32) {
+    let room = (inner_width - CALENDAR_DAY_LABELS + CALENDAR_GAP).max(0.0);
+    let weeks = ((room / (CALENDAR_MIN_CELL + CALENDAR_GAP)) as usize).clamp(1, CALENDAR_WEEKS);
+    let cell = (room / weeks as f32 - CALENDAR_GAP).clamp(CALENDAR_MIN_CELL, CALENDAR_MAX_CELL);
+    (weeks, cell)
+}
+
+/// The last year in a card: a square a day, a column a week, Monday at the top. Centred in the
+/// card once the squares have reached their largest and there's room to spare.
 fn calendar(ui: &mut egui::Ui, p: &theme::Palette, days: &[(NaiveDate, u32)]) {
     let Some(&(first, _)) = days.first() else {
         return;
     };
     let width = ui.available_width();
-    let inner = width - CALENDAR_PADDING * 2.0;
-    let cell = ((inner - CALENDAR_DAY_LABELS - CALENDAR_GAP * (CALENDAR_WEEKS - 1) as f32)
-        / CALENDAR_WEEKS as f32)
-        .clamp(CALENDAR_MIN_CELL, CALENDAR_MAX_CELL);
+    let (weeks, cell) = calendar_fit(width - CALENDAR_PADDING * 2.0);
     let step = cell + CALENDAR_GAP;
     let grid_height = step * 7.0 - CALENDAR_GAP;
-    let height =
-        CALENDAR_PADDING * 2.0 + CALENDAR_HEADER + CALENDAR_MONTHS + grid_height + CALENDAR_FOOTER;
+    let height = CALENDAR_PADDING * 2.0 + CALENDAR_HEADER + CALENDAR_MONTHS + grid_height;
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(
@@ -402,6 +520,11 @@ fn calendar(ui: &mut egui::Ui, p: &theme::Palette, days: &[(NaiveDate, u32)]) {
         widgets::group_fill(p),
     );
     let inner = rect.shrink(CALENDAR_PADDING);
+    let content_width = CALENDAR_DAY_LABELS + step * weeks as f32 - CALENDAR_GAP;
+    let inner = Rect::from_center_size(
+        inner.center(),
+        vec2(content_width.min(inner.width()), inner.height()),
+    );
     let total: u64 = days.iter().map(|(_, plays)| u64::from(*plays)).sum();
     painter.text(
         inner.left_top(),
@@ -426,6 +549,8 @@ fn calendar(ui: &mut egui::Ui, p: &theme::Palette, days: &[(NaiveDate, u32)]) {
     let steps = calendar_steps(days);
     let radius = CornerRadius::same((cell / 4.0).round() as u8);
     let first_weekday = first.weekday().num_days_from_monday() as usize;
+    let all_weeks = (days.len() + first_weekday).div_ceil(7);
+    let first_week = all_weeks.saturating_sub(weeks);
     let hover = response.hover_pos();
     let mut hovered = None;
     let mut month_left = f32::NEG_INFINITY;
@@ -433,7 +558,10 @@ fn calendar(ui: &mut egui::Ui, p: &theme::Palette, days: &[(NaiveDate, u32)]) {
     for (i, &(date, plays)) in days.iter().enumerate() {
         let index = i + first_weekday;
         let (week, weekday) = (index / 7, index % 7);
-        let x = grid_left + week as f32 * step;
+        if week < first_week {
+            continue;
+        }
+        let x = grid_left + (week - first_week) as f32 * step;
         let cell_rect =
             Rect::from_min_size(pos2(x, grid_top + weekday as f32 * step), vec2(cell, cell));
         painter.rect_filled(
@@ -467,16 +595,6 @@ fn calendar(ui: &mut egui::Ui, p: &theme::Palette, days: &[(NaiveDate, u32)]) {
         }
     }
 
-    // The shades from none to the most, under the grid's right end.
-    let legend_y = inner.bottom() - cell / 2.0;
-    let mut right = inner.right();
-    for level in (0..=4).rev() {
-        let swatch =
-            Rect::from_min_size(pos2(right - cell, legend_y - cell / 2.0), vec2(cell, cell));
-        painter.rect_filled(swatch, radius, calendar_colour(p, level));
-        right = swatch.left() - CALENDAR_GAP;
-    }
-
     if let Some((date, plays)) = hovered {
         response.on_hover_text_at_pointer(format!(
             "{}: {}",
@@ -497,6 +615,22 @@ mod tests {
             .zip(start.iter_days())
             .map(|(plays, date)| (date, *plays))
             .collect()
+    }
+
+    #[test]
+    fn the_calendar_keeps_a_whole_year_until_even_the_smallest_squares_wont_fit() {
+        let (weeks, cell) = calendar_fit(2000.0);
+        assert_eq!((weeks, cell), (CALENDAR_WEEKS, CALENDAR_MAX_CELL));
+        assert_eq!(calendar_fit(600.0).0, CALENDAR_WEEKS);
+        let inner = 330.0;
+        let (weeks, cell) = calendar_fit(inner);
+        assert!(weeks < CALENDAR_WEEKS);
+        assert_eq!(cell.max(CALENDAR_MIN_CELL), cell);
+        let grid = (cell + CALENDAR_GAP) * weeks as f32 - CALENDAR_GAP;
+        assert!(
+            CALENDAR_DAY_LABELS + grid <= inner + 0.5,
+            "stays in its card"
+        );
     }
 
     #[test]

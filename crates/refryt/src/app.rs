@@ -498,6 +498,8 @@ pub enum Route {
     History,
     /// What you've been listening to, from the log kept on this machine.
     Stats,
+    /// One of Stats' top lists, past the few rows Stats shows.
+    StatsTop(crate::listening_stats::TopList),
     Library,
     Settings,
     Artist(String),
@@ -530,6 +532,8 @@ impl Route {
             "moods" => Some(Route::Moods),
             "history" => Some(Route::History),
             "stats" => Some(Route::Stats),
+            "top-songs" => Some(Route::StatsTop(crate::listening_stats::TopList::Songs)),
+            "top-artists" => Some(Route::StatsTop(crate::listening_stats::TopList::Artists)),
             "library" => Some(Route::Library),
             "settings" => Some(Route::Settings),
             other => match other.split_once(':') {
@@ -1460,12 +1464,18 @@ pub struct App {
     stats_epoch: u64,
     /// The last report asked for.
     stats_requested: Option<u64>,
-    /// Which of the Stats page's top lists are open past their first rows.
-    pub(crate) stats_expanded: [bool; 3],
     /// Settings' Delete stats has been pressed once, and is asking to be sure.
     pub(crate) stats_delete_armed: bool,
     /// An artist's id and how many times you've played them, for their page.
     pub(crate) artist_plays: Option<(String, u64)>,
+    /// Songs being looked up for the Stats page.
+    looking_up_songs: bool,
+    /// Songs already asked about this run, so one YouTube won't answer isn't asked forever.
+    songs_asked: std::collections::HashSet<String>,
+    /// A Takeout export is on its way into the play log.
+    pub(crate) takeout_importing: bool,
+    /// Plays that ended during an import, which rewrites the log: added once it's done.
+    plays_during_import: Vec<crate::play_log::Play>,
     /// Escape closed the recent-searches list. Without this it would reopen on the next frame,
     /// the box still being focused and empty; typing or refocusing clears it.
     pub(crate) recent_dismissed: bool,
@@ -2112,9 +2122,12 @@ impl App {
             stats_error: None,
             stats_epoch: 0,
             stats_requested: None,
-            stats_expanded: [false; 3],
             stats_delete_armed: false,
             artist_plays: None,
+            looking_up_songs: false,
+            songs_asked: Default::default(),
+            takeout_importing: false,
+            plays_during_import: Vec::new(),
             recent_dismissed: false,
             pending_search: search.is_some(),
             searched: String::new(),
@@ -3642,7 +3655,7 @@ impl App {
             Route::Charts(params) => self.load_charts(params),
             Route::Moods => self.load_moods(),
             Route::History => self.load_history(),
-            Route::Stats => self.load_stats(),
+            Route::Stats | Route::StatsTop(_) => self.load_stats(),
             Route::Search | Route::Settings => {}
         }
     }
@@ -4031,7 +4044,7 @@ impl App {
     /// lands at the failed attempt's offset.
     pub(crate) fn retry_route(&mut self) {
         match self.current_route() {
-            Route::Stats => {
+            Route::Stats | Route::StatsTop(_) => {
                 self.stats_error = None;
                 self.stats_epoch += 1;
             }
@@ -5484,13 +5497,19 @@ impl App {
                 // overwrite a newer one's shelves.
                 Event::HistoryLoaded { .. } | Event::HistoryFailed { .. } => {}
                 Event::StatsLoaded { report, epoch } if epoch == self.stats_epoch => {
+                    self.look_up_songs(&report.missing_details);
                     self.stats_report = Some(report);
                     self.stats_error = None;
+                }
+                Event::SongDetailsSaved { done } => {
+                    self.looking_up_songs = !done;
+                    self.stats_epoch += 1;
                 }
                 Event::StatsFailed { error, epoch } if epoch == self.stats_epoch => {
                     self.stats_error = Some(error);
                 }
                 Event::StatsLoaded { .. } | Event::StatsFailed { .. } => {}
+                Event::TakeoutImported { result } => self.takeout_imported(result),
                 Event::ArtistPlaysCounted { id, plays } => {
                     self.artist_plays = Some((id, plays));
                 }
@@ -7253,7 +7272,6 @@ impl App {
         if self.stats_range != range {
             self.stats_range = range;
             self.stats_error = None;
-            self.stats_expanded = [false; 3];
             self.stats_epoch += 1;
         }
     }
@@ -7265,6 +7283,7 @@ impl App {
             Ok(()) => {
                 self.listening = Default::default();
                 self.artist_plays = None;
+                self.songs_asked.clear();
                 self.stats_report = None;
                 self.stats_epoch += 1;
                 self.toast("Deleted your stats");
@@ -7276,11 +7295,63 @@ impl App {
         }
     }
 
+    /// Ask YouTube about top songs an import left with only a title.
+    fn look_up_songs(&mut self, missing: &[String]) {
+        if self.looking_up_songs || self.offline {
+            return;
+        }
+        let ids: Vec<String> = missing
+            .iter()
+            .filter(|id| self.songs_asked.insert((*id).clone()))
+            .cloned()
+            .collect();
+        if !ids.is_empty() {
+            self.looking_up_songs = true;
+            self.backend.look_up_songs(ids);
+        }
+    }
+
+    /// Bring a Takeout export into the play log.
+    pub(crate) fn import_takeout(&mut self, path: std::path::PathBuf) {
+        if !self.takeout_importing {
+            self.takeout_importing = true;
+            self.backend.import_takeout(path);
+        }
+    }
+
+    /// An import has finished, one way or the other.
+    fn takeout_imported(&mut self, result: Result<crate::takeout::Summary, String>) {
+        self.takeout_importing = false;
+        for play in std::mem::take(&mut self.plays_during_import) {
+            self.log_play(Some(play));
+        }
+        match result {
+            Ok(summary) => {
+                self.stats_error = None;
+                self.stats_epoch += 1;
+                self.artist_for = None;
+                let added = crate::listening_stats::plays_label(summary.added);
+                self.toast(&format!(
+                    "Imported {added}, {} already there",
+                    summary.skipped
+                ));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not import the Takeout export");
+                self.toast_error(&failure_text("Could not import that file", &error));
+            }
+        }
+    }
+
     /// A listen has ended that counts, if `play` says so.
     fn log_play(&mut self, play: Option<crate::play_log::Play>) {
         let Some(play) = play.filter(|_| self.settings.listening_stats) else {
             return;
         };
+        if self.takeout_importing {
+            self.plays_during_import.push(play);
+            return;
+        }
         if let Err(e) = crate::play_log::append(&play) {
             tracing::warn!(error = %format!("{e:#}"), "could not add to the play log");
             return;
@@ -8510,6 +8581,9 @@ impl eframe::App for App {
                         if self.offline && !offline_page {
                             ui::offline_banner(self, ui);
                         }
+                        if route == Route::Stats {
+                            ui::listening::takeout_offer(self, ui);
+                        }
                         match route {
                             Route::Search => ui::search::page(self, ui),
                             Route::Explore => ui::explore::page(self, ui),
@@ -8519,6 +8593,7 @@ impl eframe::App for App {
                             Route::HomeShelf(title) => ui::home::shelf_page(self, ui, &title),
                             Route::History => ui::history::page(self, ui),
                             Route::Stats => ui::listening::page(self, ui),
+                            Route::StatsTop(list) => ui::listening::top_page(self, ui, list),
                             Route::Home => ui::home::page(self, ui),
                             Route::Library => ui::library::page(self, ui),
                             Route::Settings => ui::settings::page(self, ui),

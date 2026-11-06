@@ -24,6 +24,7 @@ icons! {
     ChevronRight => "chevron-right",
     Check => "check",
     Compass => "compass",
+    CircleHelp => "circle-help",
     CircleUser => "circle-user",
     Bookmark => "bookmark",
     CircleAlert => "circle-alert",

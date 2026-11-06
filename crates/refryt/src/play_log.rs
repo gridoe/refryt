@@ -7,6 +7,7 @@
 //! [`Listening`] decides what counts: a song is logged once you have listened to 30 seconds of
 //! it, or half of it if that is shorter. Pauses add nothing and neither does seeking forward.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -34,6 +35,10 @@ pub enum Source {
     /// Played here, so the seconds listened are measured.
     #[default]
     App,
+    /// From a Google Takeout export: the time is exact, the seconds listened an estimate.
+    Takeout,
+    /// Seen in the account's history: both are best guesses, until an export replaces it.
+    Poll,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +140,92 @@ impl Play {
     }
 }
 
+/// What YouTube says about a song an export only knew the id and title of. Kept apart from the
+/// log, so looking one up never rewrites it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SongDetails {
+    #[serde(rename = "t")]
+    pub title: String,
+    #[serde(rename = "a", default)]
+    pub artists: Vec<LoggedArtist>,
+    #[serde(rename = "al", default, skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
+    #[serde(rename = "ai", default, skip_serializing_if = "Option::is_none")]
+    pub album_id: Option<String>,
+    #[serde(rename = "d", default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<u64>,
+    #[serde(rename = "c", default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
+    #[serde(rename = "w", default, skip_serializing_if = "std::ops::Not::not")]
+    pub wide: bool,
+}
+
+impl SongDetails {
+    pub fn new(track: &Track) -> Self {
+        let play = Play::new(track, 0, 0.0);
+        Self {
+            title: play.title,
+            artists: play.artists,
+            album: play.album,
+            album_id: play.album_id,
+            duration: play.duration,
+            thumbnail: play.thumbnail,
+            wide: play.wide,
+        }
+    }
+}
+
+impl Play {
+    /// Take YouTube's word for a song this play knows little about. A play measured here keeps
+    /// what it has, and its listening time.
+    pub fn apply(&mut self, details: &SongDetails) {
+        if self.source == Source::App {
+            return;
+        }
+        self.title.clone_from(&details.title);
+        if !details.artists.is_empty() {
+            self.artists.clone_from(&details.artists);
+        }
+        self.album.clone_from(&details.album);
+        self.album_id.clone_from(&details.album_id);
+        self.duration = details.duration;
+        self.wide = details.wide;
+        if details.thumbnail.is_some() {
+            self.thumbnail.clone_from(&details.thumbnail);
+        }
+        if let Some(duration) = details.duration {
+            self.listened = duration;
+        }
+    }
+}
+
+fn details_path() -> Result<PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", "refryt")
+        .context("could not find the config directory")?;
+    Ok(dirs.config_dir().join("song_details.json"))
+}
+
+/// The songs looked up so far. Empty for a missing or unreadable file: they can be looked up again.
+pub fn load_details() -> HashMap<String, SongDetails> {
+    details_path()
+        .ok()
+        .and_then(|path| fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Add to the songs looked up so far.
+pub fn save_details(new: Vec<(String, SongDetails)>) -> Result<()> {
+    let mut details = load_details();
+    details.extend(new);
+    let path = details_path()?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    crate::persist::write_json_atomic(&path, &serde_json::to_vec(&details)?)
+        .context("could not save the song details")
+}
+
 fn path() -> Result<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "refryt")
         .context("could not find the config directory")?;
@@ -200,8 +291,33 @@ fn for_each_in(path: &Path, mut visit: impl FnMut(Play)) -> Result<()> {
     }
 }
 
+/// Every readable play, for rewriting the log.
+pub fn read_all() -> Result<Vec<Play>> {
+    let mut plays = Vec::new();
+    for_each(|play| plays.push(play))?;
+    Ok(plays)
+}
+
+/// Put `plays` in the log's place, all at once: a crash leaves the old log or the new one.
+pub fn replace(plays: &[Play]) -> Result<()> {
+    let path = path()?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut bytes = Vec::with_capacity(plays.len() * 200);
+    for play in plays {
+        serde_json::to_writer(&mut bytes, play)?;
+        bytes.push(b'\n');
+    }
+    crate::persist::write_json_atomic(&path, &bytes).context("could not write the play log")
+}
+
 /// Forget every play.
 pub fn delete() -> Result<()> {
+    // Not plays, but only here for them.
+    if let Ok(details) = details_path() {
+        let _ = fs::remove_file(details);
+    }
     match fs::remove_file(path()?) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => {
             Err(e).context("could not delete the play log")
@@ -459,6 +575,39 @@ mod tests {
         append_to(&file, &play("b")).unwrap();
         assert_eq!(read(), ["a", "b"]);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn details_fill_in_an_imported_play_and_leave_a_measured_one_alone() {
+        let details = SongDetails {
+            title: "real title".to_owned(),
+            artists: vec![LoggedArtist {
+                name: "Real".to_owned(),
+                id: Some("UCreal".to_owned()),
+            }],
+            album: Some("Album".to_owned()),
+            album_id: Some("MPREb".to_owned()),
+            duration: Some(123),
+            thumbnail: Some("square".to_owned()),
+            wide: false,
+        };
+        let mut here = Play::new(&track("a", Some(200)), 1, 60.0);
+        let unchanged = here.clone();
+        here.apply(&details);
+        assert_eq!(here, unchanged);
+
+        let mut imported = Play {
+            source: Source::Takeout,
+            listened: 210,
+            thumbnail: Some("banded".to_owned()),
+            ..unchanged
+        };
+        imported.apply(&details);
+        assert_eq!(imported.title, "real title");
+        assert_eq!(imported.album_id.as_deref(), Some("MPREb"));
+        assert_eq!(imported.artists[0].id.as_deref(), Some("UCreal"));
+        assert_eq!(imported.thumbnail.as_deref(), Some("square"));
+        assert_eq!(imported.listened, 123, "its real length, not the estimate");
     }
 
     #[test]

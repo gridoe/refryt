@@ -10,8 +10,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone};
 
-use crate::model::{AlbumRef, ArtistActions, ArtistRef, Entry};
-use crate::play_log::{self, Play};
+use crate::model::{ArtistActions, ArtistRef, Entry};
+use crate::play_log::{self, Play, SongDetails};
 
 /// How far the calendar reaches back.
 const CALENDAR_DAYS: u64 = 364;
@@ -76,6 +76,22 @@ impl StatsRange {
 }
 
 /// Change against the period before.
+/// The lists the Stats page shows the start of, each with a page of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TopList {
+    Songs,
+    Artists,
+}
+
+impl TopList {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Songs => "Top songs",
+            Self::Artists => "Top artists",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Delta {
     /// `None` when there was nothing to compare with.
@@ -104,26 +120,28 @@ struct Period {
     seconds: u64,
     tracks: HashSet<String>,
     artists: HashSet<String>,
+    /// Some of it comes from an import, whose time is estimated.
+    estimated: bool,
 }
 
 impl Period {
     fn add(&mut self, play: &Play) {
         self.plays += 1;
         self.seconds += play.listened;
+        self.estimated |= play.source != play_log::Source::App;
         if !self.tracks.contains(&play.video_id) {
             self.tracks.insert(play.video_id.clone());
         }
         for artist in &play.artists {
-            let key = artist_key(artist);
-            if !self.artists.contains(key) {
-                self.artists.insert(key.to_owned());
-            }
+            self.artists.insert(artist_key(artist));
         }
     }
 }
 
-fn artist_key(artist: &play_log::LoggedArtist) -> &str {
-    artist.id.as_deref().unwrap_or(&artist.name)
+/// By name, not id: an import knows an artist only by their name, and they are the same artist
+/// as the one a play here knows by id.
+fn artist_key(artist: &play_log::LoggedArtist) -> String {
+    artist.name.to_lowercase()
 }
 
 /// One bar of plays over time.
@@ -138,8 +156,12 @@ pub struct Report {
     pub range: StatsRange,
     /// Every play in the log, in any range: nothing at all reads differently from a quiet week.
     pub logged: u64,
+    /// Whether any of the log came from a Takeout export.
+    pub imported: bool,
     pub plays: u64,
     pub seconds: u64,
+    /// `seconds` is partly an estimate.
+    pub seconds_estimated: bool,
     pub songs: u64,
     pub artists: u64,
     pub plays_delta: Option<Delta>,
@@ -148,12 +170,13 @@ pub struct Report {
     pub artists_delta: Option<Delta>,
     pub top_songs: Vec<Entry>,
     pub top_artists: Vec<Entry>,
-    pub top_albums: Vec<Entry>,
     pub bars: Vec<Bar>,
     /// The last [`CALENDAR_DAYS`] and their plays, oldest first, ending today.
     pub calendar: Vec<(NaiveDate, u32)>,
     pub current_streak: u32,
     pub longest_streak: u32,
+    /// Top songs still known only from an import, whose details are worth looking up.
+    pub missing_details: Vec<String>,
 }
 
 /// "1 play", "12 plays".
@@ -177,50 +200,56 @@ struct Group {
     last: i64,
     name: String,
     id: Option<String>,
-    /// Album only: its artist.
-    artist: String,
     art: Option<Arc<str>>,
+    /// Artist only: the song its picture comes from, while that song is still unknown.
+    unknown_song: Option<String>,
 }
 
 /// Adds up the log for one range, a play at a time.
 struct Builder<Tz: TimeZone> {
     now: DateTime<Tz>,
+    details: HashMap<String, SongDetails>,
     range: StatsRange,
     since: Option<i64>,
     /// The same length of time before `since`.
     before: Option<i64>,
     logged: u64,
+    imported: bool,
     current: Period,
     previous: Period,
     songs: HashMap<String, Tally>,
     artists: HashMap<String, Group>,
-    albums: HashMap<String, Group>,
     range_days: HashMap<NaiveDate, u32>,
     all_days: HashMap<NaiveDate, u32>,
 }
 
 impl<Tz: TimeZone> Builder<Tz> {
-    fn new(range: StatsRange, now: DateTime<Tz>) -> Self {
+    fn new(range: StatsRange, now: DateTime<Tz>, details: HashMap<String, SongDetails>) -> Self {
         let since = range.since(&now);
         let before = since.map(|since| since - (now.timestamp() - since));
         Self {
             now,
+            details,
             range,
             since,
             before,
             logged: 0,
+            imported: false,
             current: Period::default(),
             previous: Period::default(),
             songs: HashMap::new(),
             artists: HashMap::new(),
-            albums: HashMap::new(),
             range_days: HashMap::new(),
             all_days: HashMap::new(),
         }
     }
 
-    fn add(&mut self, play: Play) {
+    fn add(&mut self, mut play: Play) {
         self.logged += 1;
+        self.imported |= play.source == play_log::Source::Takeout;
+        if let Some(details) = self.details.get(&play.video_id) {
+            play.apply(details);
+        }
         let tz = self.now.timezone();
         let Some(date) = tz
             .timestamp_opt(play.at, 0)
@@ -239,34 +268,14 @@ impl<Tz: TimeZone> Builder<Tz> {
         *self.range_days.entry(date).or_default() += 1;
         self.current.add(&play);
         for artist in &play.artists {
-            let key = artist_key(artist);
-            let group = match self.artists.get_mut(key) {
-                Some(group) => group,
-                None => self.artists.entry(key.to_owned()).or_default(),
-            };
+            let group = self.artists.entry(artist_key(artist)).or_default();
             group.plays += 1;
             if play.at >= group.last || group.name.is_empty() {
                 group.last = play.at;
                 group.name.clone_from(&artist.name);
-                group.id.clone_from(&artist.id);
             }
-        }
-        // An album needs its id to be a way in to anything; without one it is only a name.
-        if let (Some(id), Some(title)) = (&play.album_id, &play.album) {
-            let group = match self.albums.get_mut(id) {
-                Some(group) => group,
-                None => self.albums.entry(id.clone()).or_default(),
-            };
-            group.plays += 1;
-            if play.at >= group.last || group.name.is_empty() {
-                group.last = play.at;
-                group.name.clone_from(title);
-                group.id = Some(id.clone());
-                group.artist = play
-                    .artists
-                    .first()
-                    .map(|a| a.name.clone())
-                    .unwrap_or_default();
+            if artist.id.is_some() {
+                group.id.clone_from(&artist.id);
             }
         }
         match self.songs.get_mut(&play.video_id) {
@@ -294,26 +303,28 @@ impl<Tz: TimeZone> Builder<Tz> {
     fn finish(mut self) -> Report {
         let mut songs: Vec<Tally> = self.songs.drain().map(|(_, tally)| tally).collect();
         songs.sort_unstable_by(|a, b| b.plays.cmp(&a.plays).then(b.last.cmp(&a.last)));
-        // An artist or album's picture is its most played song's cover.
+        let details = std::mem::take(&mut self.details);
+        let unknown = |play: &Play| {
+            play.source != play_log::Source::App && !details.contains_key(&play.video_id)
+        };
+        // An artist's picture is their most played song's cover.
         for tally in &songs {
             let art = tally.play.thumbnail.as_deref();
             for artist in &tally.play.artists {
-                if let Some(group) = self.artists.get_mut(artist_key(artist))
+                if let Some(group) = self.artists.get_mut(&artist_key(artist))
                     && group.art.is_none()
                 {
                     group.art = art.map(Arc::from);
+                    group.unknown_song = unknown(&tally.play).then(|| tally.play.video_id.clone());
                 }
             }
-            if let Some(group) = tally
-                .play
-                .album_id
-                .as_ref()
-                .and_then(|id| self.albums.get_mut(id))
-                && group.art.is_none()
-            {
-                group.art = art.map(Arc::from);
-            }
         }
+        let mut missing_details: Vec<String> = songs
+            .iter()
+            .take(TOP_LIMIT)
+            .filter(|tally| unknown(&tally.play))
+            .map(|tally| tally.play.video_id.clone())
+            .collect();
         let top_songs = songs
             .into_iter()
             .take(TOP_LIMIT)
@@ -327,7 +338,13 @@ impl<Tz: TimeZone> Builder<Tz> {
                 }
             })
             .collect();
-        let top_artists = top_groups(self.artists)
+        let top_artists: Vec<Group> = top_groups(self.artists);
+        for song in top_artists.iter().filter_map(|g| g.unknown_song.as_ref()) {
+            if !missing_details.contains(song) {
+                missing_details.push(song.clone());
+            }
+        }
+        let top_artists = top_artists
             .into_iter()
             .map(|group| {
                 Entry::Artist(ArtistRef {
@@ -336,19 +353,6 @@ impl<Tz: TimeZone> Builder<Tz> {
                     name: group.name,
                     thumbnail: group.art,
                     actions: ArtistActions::default(),
-                })
-            })
-            .collect();
-        let top_albums = top_groups(self.albums)
-            .into_iter()
-            .map(|group| {
-                Entry::Album(AlbumRef {
-                    id: group.id.clone().unwrap_or_default(),
-                    title: group.name,
-                    artist: group.artist,
-                    year: Some(plays_label(group.plays)),
-                    kind: None,
-                    thumbnail: group.art,
                 })
             })
             .collect();
@@ -370,8 +374,10 @@ impl<Tz: TimeZone> Builder<Tz> {
         Report {
             range: self.range,
             logged: self.logged,
+            imported: self.imported,
             plays: current.plays,
             seconds: current.seconds,
+            seconds_estimated: current.estimated,
             songs: current.tracks.len() as u64,
             artists: current.artists.len() as u64,
             plays_delta: compare(current.plays, previous.plays),
@@ -380,11 +386,11 @@ impl<Tz: TimeZone> Builder<Tz> {
             artists_delta: compare(current.artists.len() as u64, previous.artists.len() as u64),
             top_songs,
             top_artists,
-            top_albums,
             bars: bars(self.range, since, today, &self.range_days),
             calendar: calendar(today, &self.all_days),
             current_streak,
             longest_streak,
+            missing_details,
         }
     }
 }
@@ -525,20 +531,51 @@ pub fn listening_time(seconds: u64) -> String {
 
 /// The report for a range, from the log on disk. Slow enough to belong off the UI thread.
 pub fn load(range: StatsRange) -> Result<Report> {
-    let mut builder = Builder::new(range, Local::now());
+    let mut builder = Builder::new(range, Local::now(), play_log::load_details());
     play_log::for_each(|play| builder.add(play))?;
     Ok(builder.finish())
 }
 
 /// How many times an artist has been played, for their page.
+///
+/// By their name once a play with this id gives it, since an import knows them only by name.
 pub fn artist_plays(id: &str) -> Result<u64> {
-    let mut plays = 0;
-    play_log::for_each(|play| {
-        if play.artists.iter().any(|a| a.id.as_deref() == Some(id)) {
-            plays += 1;
+    let details = play_log::load_details();
+    let mut count = ArtistCount::default();
+    play_log::for_each(|mut play| {
+        if let Some(details) = details.get(&play.video_id) {
+            play.apply(details);
         }
+        count.add(id, &play);
     })?;
-    Ok(plays)
+    Ok(count.total())
+}
+
+/// Plays by name, because an import names an artist without giving its id: one looked-up song
+/// or play here is enough to tie the id to the name.
+#[derive(Default)]
+struct ArtistCount {
+    name: Option<String>,
+    by_name: HashMap<String, u64>,
+}
+
+impl ArtistCount {
+    fn add(&mut self, id: &str, play: &Play) {
+        for artist in &play.artists {
+            let key = artist_key(artist);
+            if artist.id.as_deref() == Some(id) {
+                self.name.get_or_insert_with(|| key.clone());
+            }
+            *self.by_name.entry(key).or_default() += 1;
+        }
+    }
+
+    fn total(&self) -> u64 {
+        self.name
+            .as_ref()
+            .and_then(|name| self.by_name.get(name).copied())
+            .unwrap_or(0)
+    }
 }
 
 /// A time some days back, for tests that place plays relative to now.
@@ -588,7 +625,7 @@ mod tests {
     }
 
     fn report(range: StatsRange, plays: Vec<Play>) -> Report {
-        let mut builder = Builder::new(range, now());
+        let mut builder = Builder::new(range, now(), HashMap::new());
         for p in plays {
             builder.add(p);
         }
@@ -690,7 +727,6 @@ mod tests {
         assert_eq!(top.plays.as_deref(), Some("2 plays"));
         let names: Vec<&str> = r.top_artists.iter().map(Entry::title).collect();
         assert_eq!(names, ["x", "z", "y"]);
-        assert_eq!(r.top_albums.len(), 3);
         assert_eq!((r.songs, r.artists, r.seconds), (3, 3, 400));
     }
 
@@ -720,10 +756,105 @@ mod tests {
     }
 
     #[test]
-    fn an_album_without_an_id_is_left_out_of_the_top_list() {
-        let mut p = play("a", "x", at_hour(&now(), 1, 12));
-        p.album_id = None;
-        assert!(report(StatsRange::All, vec![p]).top_albums.is_empty());
+    fn imported_plays_count_for_an_artist_once_a_song_ties_the_id_to_the_name() {
+        let n = now();
+        let mut imported = play("old", "x", at_hour(&n, 2, 12));
+        imported.artists[0].id = None;
+        let mut known = imported.clone();
+        known.artists[0].id = Some("UCx".to_owned());
+
+        let mut count = ArtistCount::default();
+        count.add("UCx", &imported);
+        assert_eq!(count.total(), 0, "nothing says who the id is yet");
+        count.add("UCx", &known);
+        assert_eq!(count.total(), 2);
+    }
+
+    #[test]
+    fn the_report_says_whether_anything_was_imported() {
+        let n = now();
+        let here = play("a", "x", at_hour(&n, 2, 12));
+        assert!(!report(StatsRange::All, vec![here.clone()]).imported);
+        let mut old = here.clone();
+        old.source = Source::Takeout;
+        old.at = at_hour(&n, 300, 12);
+        // Outside the range shown, and it still counts: the log as a whole has it.
+        assert!(report(StatsRange::Today, vec![here, old]).imported);
+    }
+
+    /// Only top songs from an import need looking up, and once known they count as what they are.
+    #[test]
+    fn top_songs_from_an_import_are_looked_up_once() {
+        let n = now();
+        let mut imported = play("old", "channel", at_hour(&n, 2, 12));
+        imported.source = Source::Takeout;
+        let plays = vec![imported, play("here", "x", at_hour(&n, 1, 12))];
+        assert_eq!(
+            report(StatsRange::All, plays.clone()).missing_details,
+            ["old"]
+        );
+
+        let details = SongDetails {
+            title: "Real".to_owned(),
+            artists: vec![LoggedArtist {
+                name: "Real Artist".to_owned(),
+                id: Some("UCreal".to_owned()),
+            }],
+            album: Some("Real Album".to_owned()),
+            album_id: Some("MPREb".to_owned()),
+            duration: Some(300),
+            thumbnail: Some("square".to_owned()),
+            wide: false,
+        };
+        let mut builder = Builder::new(
+            StatsRange::All,
+            n,
+            HashMap::from([("old".to_owned(), details)]),
+        );
+        for p in plays {
+            builder.add(p);
+        }
+        let r = builder.finish();
+        assert!(r.missing_details.is_empty());
+        let names: Vec<&str> = r.top_artists.iter().map(Entry::title).collect();
+        assert!(names.contains(&"Real Artist"));
+        assert!(!names.contains(&"channel"));
+    }
+
+    /// An import knows an artist by name and a play here by id: they are one artist, with the id.
+    #[test]
+    fn an_artist_known_only_by_name_joins_the_same_artist_known_by_id() {
+        let n = now();
+        let mut imported = play("old", "x", at_hour(&n, 2, 12));
+        imported.artists[0] = LoggedArtist {
+            name: "X".to_owned(),
+            id: None,
+        };
+        imported.source = Source::Takeout;
+        let r = report(
+            StatsRange::All,
+            vec![
+                imported.clone(),
+                play("new", "x", at_hour(&n, 1, 12)),
+                imported,
+            ],
+        );
+        assert_eq!((r.artists, r.top_artists.len()), (1, 1));
+        let Entry::Artist(artist) = &r.top_artists[0] else {
+            panic!("an artist");
+        };
+        assert_eq!(artist.id, "id-x");
+        assert_eq!(artist.subscribers.as_deref(), Some("3 plays"));
+        assert!(r.seconds_estimated);
+    }
+
+    #[test]
+    fn listening_time_is_measured_when_every_play_was_here() {
+        let r = report(
+            StatsRange::All,
+            vec![play("a", "x", at_hour(&now(), 1, 12))],
+        );
+        assert!(!r.seconds_estimated);
     }
 
     #[test]
