@@ -395,6 +395,10 @@ const POSITION_SAVE_EVERY: Duration = Duration::from_secs(30);
 
 /// How often the playback state is compared with what `playback.json` holds.
 const PLAYBACK_CHECK_EVERY: Duration = Duration::from_secs(1);
+/// How often to look through the account's history for plays made elsewhere.
+const HISTORY_CHECK_EVERY: Duration = Duration::from_secs(600);
+/// The least time between checks when Stats is opened, so going back and forth asks once.
+const HISTORY_CHECK_AGAIN_AFTER: Duration = Duration::from_secs(30);
 
 /// What `playback.json` was last written with, for [`playback_save_due`].
 struct SavedPlayback {
@@ -1474,6 +1478,13 @@ pub struct App {
     songs_asked: std::collections::HashSet<String>,
     /// A Takeout export is on its way into the play log.
     pub(crate) takeout_importing: bool,
+    /// When the account's history was last asked for.
+    history_checked: Option<Instant>,
+    history_checking: bool,
+    /// The history list changed too much to follow, so plays may be missing.
+    pub(crate) history_gap: bool,
+    /// Stats are off and the last history list has been dropped.
+    history_forgotten: bool,
     /// Plays that ended during an import, which rewrites the log: added once it's done.
     plays_during_import: Vec<crate::play_log::Play>,
     /// Escape closed the recent-searches list. Without this it would reopen on the next frame,
@@ -2127,6 +2138,10 @@ impl App {
             looking_up_songs: false,
             songs_asked: Default::default(),
             takeout_importing: false,
+            history_checked: None,
+            history_checking: false,
+            history_gap: false,
+            history_forgotten: false,
             plays_during_import: Vec::new(),
             recent_dismissed: false,
             pending_search: search.is_some(),
@@ -2578,6 +2593,7 @@ impl App {
         if self.settings.account_page_id != before.account_page_id {
             self.backend
                 .switch_account(self.settings.account_page_id.clone());
+            self.history_checked = None;
         }
         if self.settings.hide_tray_on_close != before.hide_tray_on_close {
             // Built once, ever, the first time this turns on — not rebuilt on every toggle,
@@ -3539,6 +3555,14 @@ impl App {
             .is_some_and(|f| self.current_route() != Route::Album(f.album_id))
         {
             crate::widgets::set_album_focus(&self.ctx, None);
+        }
+        // Opening Stats looks for plays made elsewhere, unless a look has only just happened.
+        if self.current_route() == Route::Stats
+            && self
+                .history_checked
+                .is_some_and(|at| at.elapsed() >= HISTORY_CHECK_AGAIN_AFTER)
+        {
+            self.history_checked = None;
         }
         // Settings is where the themes folder is offered, so what is in it is looked at fresh.
         if matches!(self.current_route(), Route::Settings) {
@@ -5510,6 +5534,13 @@ impl App {
                 }
                 Event::StatsLoaded { .. } | Event::StatsFailed { .. } => {}
                 Event::TakeoutImported { result } => self.takeout_imported(result),
+                Event::HistoryChecked { found } => {
+                    self.history_checking = false;
+                    self.history_gap = found.gap;
+                    for play in found.plays {
+                        self.log_play(Some(play));
+                    }
+                }
                 Event::ArtistPlaysCounted { id, plays } => {
                     self.artist_plays = Some((id, plays));
                 }
@@ -7311,6 +7342,55 @@ impl App {
         }
     }
 
+    /// Look for plays made away from this app when it's time to. Asks for a frame at the next
+    /// check, since an idle app paints none to notice it on.
+    fn history_step(&mut self, ctx: &egui::Context) {
+        if !self.settings.listening_stats {
+            if !self.history_forgotten {
+                self.history_forgotten = true;
+                if let Err(e) = crate::history_poll::forget() {
+                    tracing::warn!(error = %format!("{e:#}"), "could not forget the history list");
+                }
+            }
+            return;
+        }
+        self.history_forgotten = false;
+        if !self.signed_in() || self.offline || self.takeout_importing || self.history_checking {
+            return;
+        }
+        let due = self.history_checked.map_or(Duration::ZERO, |at| {
+            HISTORY_CHECK_EVERY.saturating_sub(at.elapsed())
+        });
+        if due.is_zero() {
+            tracing::debug!("looking through the account's history");
+            self.history_checked = Some(Instant::now());
+            self.history_checking = true;
+            self.backend.check_history(self.history_channel());
+        } else {
+            ctx.request_repaint_after(due);
+        }
+    }
+
+    /// Whose history a check is reading: the channel picked in the account menu, on this account.
+    fn history_channel(&self) -> String {
+        let account = match &self.auth {
+            crate::auth::AuthState::SignedIn { account, .. } => account.as_str(),
+            _ => "",
+        };
+        format!(
+            "{account}/{}",
+            self.settings.account_page_id.as_deref().unwrap_or_default()
+        )
+    }
+
+    /// The note about plays that may be missing has been answered.
+    pub(crate) fn clear_history_gap(&mut self) {
+        self.history_gap = false;
+        if let Err(e) = crate::history_poll::clear_gap() {
+            tracing::warn!(error = %format!("{e:#}"), "could not save the history list");
+        }
+    }
+
     /// Bring a Takeout export into the play log.
     pub(crate) fn import_takeout(&mut self, path: std::path::PathBuf) {
         if !self.takeout_importing {
@@ -7327,6 +7407,7 @@ impl App {
         }
         match result {
             Ok(summary) => {
+                self.clear_history_gap();
                 self.stats_error = None;
                 self.stats_epoch += 1;
                 self.artist_for = None;
@@ -8209,6 +8290,7 @@ impl eframe::App for App {
             self.show_window(ctx);
         }
         self.transport_step(ctx);
+        self.history_step(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -8583,6 +8665,7 @@ impl eframe::App for App {
                         }
                         if route == Route::Stats {
                             ui::listening::takeout_offer(self, ui);
+                            ui::listening::history_gap_note(self, ui);
                         }
                         match route {
                             Route::Search => ui::search::page(self, ui),

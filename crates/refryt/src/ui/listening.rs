@@ -149,6 +149,33 @@ pub(crate) fn takeout_offer(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+/// Too much changed in the account's history to follow, so an export is the way to fill it in.
+pub(crate) fn history_gap_note(app: &mut App, ui: &mut egui::Ui) {
+    if !app.history_gap || app.takeout_importing || !app.settings.listening_stats {
+        return;
+    }
+    let p = app.palette;
+    let (mut import, mut dismiss) = (false, false);
+    crate::ui::page_strip(
+        ui,
+        &p,
+        Icon::History,
+        p.warning,
+        "Some plays may be missing",
+        "A Takeout import can fill them in",
+        |buttons| {
+            import = widgets::pill_button(buttons, &p, "Choose file").clicked();
+            dismiss = widgets::outline_button(buttons, &p, "Dismiss").clicked();
+        },
+    );
+    if dismiss {
+        app.clear_history_gap();
+    }
+    if import && let Some(file) = crate::ui::settings::takeout_file() {
+        app.import_takeout(file);
+    }
+}
+
 struct Tile {
     label: &'static str,
     value: String,

@@ -658,7 +658,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             &p,
             "setting-listening-stats",
             "Keep listening stats",
-            "Logs the songs you listen to on this computer for the Stats page. Nothing is sent anywhere.",
+            "Logs what you play here, and what your account's history shows from elsewhere. The log stays on this computer.",
             &mut listening_stats,
         );
         g.row(

@@ -273,6 +273,10 @@ pub enum Event {
     TakeoutImported {
         result: Result<crate::takeout::Summary, String>,
     },
+    /// The account's history has been compared with the last look. Empty if the check failed.
+    HistoryChecked {
+        found: crate::history_poll::Found,
+    },
     /// Some of the songs asked for have been looked up and saved. `done` on the last batch.
     SongDetailsSaved {
         done: bool,
@@ -1811,6 +1815,27 @@ impl Backend {
         });
     }
 
+    /// Look for plays made away from this app. `channel` says whose history this is.
+    pub fn check_history(&self, channel: String) {
+        let (api, tx, ctx) = (Arc::clone(&self.api), self.tx.clone(), self.ctx.clone());
+        self.rt.spawn(async move {
+            let found = match api.history().await {
+                Ok(shelves) => tokio::task::spawn_blocking(move || {
+                    crate::history_poll::check(&channel, &shelves, chrono::Local::now())
+                })
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|checked| checked),
+                Err(e) => Err(e),
+            };
+            let found = found.unwrap_or_else(|e| {
+                debug!(error = %format!("{e:#}"), "could not check the history");
+                Default::default()
+            });
+            Self::emit(&tx, &ctx, Event::HistoryChecked { found });
+        });
+    }
+
     /// Create a playlist on the account, then reload the rail so it appears.
     pub fn create_playlist(&self, title: String) {
         let (api, tx, ctx) = (Arc::clone(&self.api), self.tx.clone(), self.ctx.clone());
@@ -2797,7 +2822,20 @@ impl Scrobble {
         };
         let Some(tracking) = tracking else { return };
         match self.api.report_playback(&tracking.playback_url).await {
-            Ok(()) => info!(video_id = %track.video_id, title = %track.title, "play reported"),
+            Ok(()) => {
+                info!(video_id = %track.video_id, title = %track.title, "play reported");
+                let id = track.video_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    if crate::settings::load().listening_stats
+                        && let Err(e) = crate::history_poll::note_reported(
+                            &id,
+                            chrono::Local::now().timestamp(),
+                        )
+                    {
+                        debug!(error = %format!("{e:#}"), "could not note the reported play");
+                    }
+                });
+            }
             Err(e) => debug!(video_id = %track.video_id, error = %format!("{e:#}"),
                 "playback beacon refused"),
         }

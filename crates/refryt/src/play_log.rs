@@ -106,6 +106,16 @@ impl Play {
         }
     }
 
+    /// A play seen in the account's history, which says neither when nor for how long: the time
+    /// listened is the song's length, or the same estimate an import uses.
+    pub(crate) fn seen_in_history(track: &Track, at: i64) -> Self {
+        let listened = track.duration.unwrap_or(crate::takeout::ESTIMATED_SECS);
+        Self {
+            source: Source::Poll,
+            ..Self::new(track, at, listened as f64)
+        }
+    }
+
     /// The song again, for a row that can play it.
     pub fn track(&self) -> Track {
         Track {

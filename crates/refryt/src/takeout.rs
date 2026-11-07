@@ -19,7 +19,7 @@ use crate::play_log::{self, LoggedArtist, Play, Source};
 /// A play here and in the export this close together are the same play, reported to YouTube.
 const SAME_PLAY_SECS: i64 = 90;
 /// How long a song is taken to be when nothing says.
-const ESTIMATED_SECS: u64 = 210;
+pub(crate) const ESTIMATED_SECS: u64 = 210;
 
 /// Takeout translates "Watched X". Longest first, since some start others; an unknown language
 /// keeps the prefix in the title, which only affects how it reads.

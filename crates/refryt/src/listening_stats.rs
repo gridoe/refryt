@@ -305,7 +305,7 @@ impl<Tz: TimeZone> Builder<Tz> {
         songs.sort_unstable_by(|a, b| b.plays.cmp(&a.plays).then(b.last.cmp(&a.last)));
         let details = std::mem::take(&mut self.details);
         let unknown = |play: &Play| {
-            play.source != play_log::Source::App && !details.contains_key(&play.video_id)
+            play.source == play_log::Source::Takeout && !details.contains_key(&play.video_id)
         };
         // An artist's picture is their most played song's cover.
         for tally in &songs {
