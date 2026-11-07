@@ -2734,14 +2734,21 @@ impl App {
             let token = crate::tray::take_activation_token();
             match action {
                 crate::tray::TrayAction::ToggleVisible => {
-                    self.hidden = !self.hidden;
-                    set_window_hidden(ctx, self.hidden);
-                    if !self.hidden {
+                    // Show when hidden, or when the OS has the window minimized underneath us
+                    // (taskbar minimize, not the tray): flipping the flag blindly would hide
+                    // again here, so the first click would look like nothing happened.
+                    let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+                    if self.hidden || minimized {
+                        self.hidden = false;
+                        set_window_hidden(ctx, false);
                         request_foreground(ctx);
                         #[cfg(target_os = "linux")]
                         if let Some(token) = &token {
                             self.activation.activate(token);
                         }
+                    } else {
+                        self.hidden = true;
+                        set_window_hidden(ctx, true);
                     }
                 }
                 crate::tray::TrayAction::Show => {
