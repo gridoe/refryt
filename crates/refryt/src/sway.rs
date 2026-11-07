@@ -36,9 +36,25 @@ pub fn set_hidden(hidden: bool) {
     let worker = WORKER.get_or_init(|| {
         let (tx, rx) = channel::<bool>();
         std::thread::spawn(move || {
+            // How the window left, so the way out can put it back: Sway drops fullscreen on
+            // the way into the scratchpad, shows everything back floating, and forgets the
+            // tiling slot — none of which survives without asking Sway itself.
+            let mut left = HiddenState::default();
             while let Ok(hidden) = rx.recv() {
-                if let Err(e) = run(hidden) {
-                    tracing::debug!(error = %format!("{e:#}"), hidden, "sway: no window change");
+                if hidden {
+                    left = HiddenState::read();
+                }
+                match run(hidden) {
+                    Ok(()) if !hidden => {
+                        let back = std::mem::take(&mut left);
+                        if let Err(e) = restore(back) {
+                            tracing::debug!(error = %format!("{e:#}"), "sway: no state back");
+                        }
+                    }
+                    Ok(()) => {}
+                    Err(e) => {
+                        tracing::debug!(error = %format!("{e:#}"), hidden, "sway: no window change");
+                    }
                 }
             }
         });
@@ -77,6 +93,99 @@ fn run(hidden: bool) -> Result<()> {
     Ok(())
 }
 
+/// How the window looked going into the scratchpad, read from Sway itself: the app is never
+/// told the compositor-side state (there is no event for it), and only Sway knows it.
+#[derive(Default)]
+struct HiddenState {
+    fullscreen: bool,
+    floating: bool,
+}
+
+impl HiddenState {
+    fn read() -> Self {
+        let Ok(out) = std::process::Command::new("swaymsg")
+            .arg("-t")
+            .arg("get_tree")
+            .output()
+        else {
+            return Self::default();
+        };
+        if !out.status.success() {
+            return Self::default();
+        }
+        serde_json::from_slice(&out.stdout)
+            .map(|tree| find_window(&tree))
+            .unwrap_or_default()
+    }
+}
+
+/// The window's state, if it is anywhere in the tree: fullscreen when its `fullscreen_mode`
+/// is anything but off, floating when it sits under a `floating_nodes` list.
+fn find_window(tree: &serde_json::Value) -> HiddenState {
+    fn walk(node: &serde_json::Value, floating: bool) -> Option<HiddenState> {
+        if node.get("app_id").and_then(|id| id.as_str()) == Some("refryt") {
+            return Some(HiddenState {
+                fullscreen: node
+                    .get("fullscreen_mode")
+                    .and_then(|mode| mode.as_u64())
+                    .unwrap_or(0)
+                    != 0,
+                floating,
+            });
+        }
+        for key in ["nodes", "floating_nodes"] {
+            if let Some(kids) = node.get(key).and_then(|k| k.as_array()) {
+                for kid in kids {
+                    if let Some(found) = walk(kid, floating || key == "floating_nodes") {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+        None
+    }
+    walk(tree, false).unwrap_or_default()
+}
+
+/// Put the window back the way it left: fullscreen again when it left fullscreen (the
+/// scratchpad drops that on the way in), tiled again when it left tiled (the scratchpad
+/// shows everything back floating). A window that left floating keeps the geometry Sway
+/// stored with it, so it needs nothing.
+fn restore(back: HiddenState) -> Result<()> {
+    if back.fullscreen {
+        return set_fullscreen();
+    }
+    if !back.floating {
+        untilt()?;
+    }
+    Ok(())
+}
+
+/// Fullscreen the window again after the scratchpad dropped it on the way in.
+fn set_fullscreen() -> Result<()> {
+    sway_op("fullscreen enable")
+}
+
+/// Retile the window after the scratchpad showed it back floating.
+fn untilt() -> Result<()> {
+    sway_op("floating disable")
+}
+
+fn sway_op(op: &str) -> Result<()> {
+    let out = std::process::Command::new("swaymsg")
+        .arg(criteria())
+        .arg(op)
+        .output()
+        .context("could not run swaymsg")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "swaymsg refused {op}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,5 +199,26 @@ mod tests {
     fn hiding_moves_away_and_showing_brings_back() {
         assert_eq!(op(true), "move scratchpad");
         assert_eq!(op(false), "scratchpad show");
+    }
+
+    #[test]
+    fn fullscreen_is_read_off_our_window_only() {
+        let tree = serde_json::json!({
+            "nodes": [
+                {"app_id": "foot", "fullscreen_mode": 1, "nodes": [], "floating_nodes": []},
+                {"app_id": "refryt", "fullscreen_mode": 0, "nodes": [], "floating_nodes": []},
+            ],
+            "floating_nodes": [],
+        });
+        let left = find_window(&tree);
+        assert!(!left.fullscreen && !left.floating);
+        let tree = serde_json::json!({
+            "nodes": [],
+            "floating_nodes": [
+                {"app_id": "refryt", "fullscreen_mode": 1, "nodes": [], "floating_nodes": []},
+            ],
+        });
+        let left = find_window(&tree);
+        assert!(left.fullscreen && left.floating);
     }
 }
