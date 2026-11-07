@@ -1374,8 +1374,14 @@ fn hide_command(hide: bool) -> egui::ViewportCommand {
 /// Hide the window to the tray, or show it again: [`hide_command`], and on Plasma's Wayland the
 /// rest of the hide through KWin (`kwin`), which takes the window off the taskbar, the pager and
 /// Alt+Tab, as on Windows. The way back is [`request_foreground`], which every show is followed
-/// by and which restores it there.
+/// by and which restores it there. On Sway neither half goes through the viewport at all:
+/// minimise requests are ignored there, so the scratchpad is both directions (`sway`).
 fn set_window_hidden(ctx: &egui::Context, hide: bool) {
+    #[cfg(target_os = "linux")]
+    if crate::sway::is_sway() {
+        crate::sway::set_hidden(hide);
+        return;
+    }
     ctx.send_viewport_cmd(hide_command(hide));
     #[cfg(target_os = "linux")]
     if hide && is_wayland() && crate::kwin::is_plasma() {
@@ -2734,14 +2740,21 @@ impl App {
             let token = crate::tray::take_activation_token();
             match action {
                 crate::tray::TrayAction::ToggleVisible => {
-                    self.hidden = !self.hidden;
-                    set_window_hidden(ctx, self.hidden);
-                    if !self.hidden {
+                    // Show when hidden, or when the OS has the window minimized underneath us
+                    // (taskbar minimize, not the tray): flipping the flag blindly would hide
+                    // again here, so the first click would look like nothing happened.
+                    let minimized = ctx.input(|i| i.viewport().minimized).unwrap_or(false);
+                    if self.hidden || minimized {
+                        self.hidden = false;
+                        set_window_hidden(ctx, false);
                         request_foreground(ctx);
                         #[cfg(target_os = "linux")]
                         if let Some(token) = &token {
                             self.activation.activate(token);
                         }
+                    } else {
+                        self.hidden = true;
+                        set_window_hidden(ctx, true);
                     }
                 }
                 crate::tray::TrayAction::Show => {

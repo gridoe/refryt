@@ -34,6 +34,8 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+#[cfg(target_os = "windows")]
+use tray_icon::MouseButtonState;
 #[cfg(not(target_os = "linux"))]
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 #[cfg(not(target_os = "linux"))]
@@ -159,11 +161,34 @@ fn menu_action(id: &str) -> Option<TrayAction> {
 
 /// What a click on the icon itself means, if anything.
 ///
-/// Only a left double-click: it shows the window. A single left click means nothing on Windows,
-/// where it is the first half of a double-click — the crate emits `Click(Up)`, then
-/// `DoubleClick`, then a second `Click(Up)` — so a toggle on the first release would fight the
-/// double-click's own show (hide, show, hide). macOS opens the menu on a click by itself.
-#[cfg(not(target_os = "linux"))]
+/// On Windows a left press toggles the window and a left double-click shows it. The toggle
+/// listens for the press (`Down`), not the release (`Up`): a double-click arrives as
+/// `Click(Down)`, `Click(Up)`, `DoubleClick`, `Click(Up)`, so a toggle on the release would
+/// fight the double-click's own show (hide, show, hide), while a toggle on the press settles
+/// as show-then-show from hidden and hide-then-show from visible. A single press toggles
+/// once, as expected. macOS opens the menu on a click by itself, so there a click means
+/// nothing and the menu's Show/Hide stays the way to hide on purpose.
+#[cfg(target_os = "windows")]
+fn icon_action(event: &TrayIconEvent) -> Option<TrayAction> {
+    match event {
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Down,
+            ..
+        } => Some(TrayAction::ToggleVisible),
+        TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        } => Some(TrayAction::Show),
+        _ => None,
+    }
+}
+
+/// What a click on the icon itself means, if anything.
+///
+/// Only a left double-click: it shows the window. A single click opens the menu by itself,
+/// so it means nothing here and the menu's Show/Hide stays the way to hide on purpose.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 fn icon_action(event: &TrayIconEvent) -> Option<TrayAction> {
     match event {
         TrayIconEvent::DoubleClick {
@@ -346,6 +371,13 @@ impl ksni::Tray for StatusItem {
         inject(&self.ctx, TrayAction::ToggleVisible);
     }
 
+    /// A middle click toggles too: some hosts only send secondary activation for it, and
+    /// otherwise it would do nothing.
+    fn secondary_activate(&mut self, _x: i32, _y: i32) {
+        keep_token();
+        inject(&self.ctx, TrayAction::ToggleVisible);
+    }
+
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::StandardItem;
         let item = |label: &str, action: TrayAction| {
@@ -429,6 +461,34 @@ mod tests {
         );
         assert_eq!(icon_action(&double_click(MouseButton::Right)), None);
         assert_eq!(icon_action(&double_click(MouseButton::Middle)), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn click(button: MouseButton, state: MouseButtonState) -> TrayIconEvent {
+        TrayIconEvent::Click {
+            id: tray_icon::TrayIconId::new("test"),
+            position: tray_icon::Rect::default().position,
+            rect: tray_icon::Rect::default(),
+            button,
+            button_state: state,
+        }
+    }
+
+    /// A single left press toggles; the releases around a double-click must not, or the
+    /// double-click's own show would be undone (hide, show, hide).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_left_press_toggles_and_either_release_does_nothing() {
+        use MouseButtonState::{Down, Up};
+        assert_eq!(
+            icon_action(&click(MouseButton::Left, Down)),
+            Some(TrayAction::ToggleVisible)
+        );
+        assert_eq!(icon_action(&click(MouseButton::Left, Up)), None);
+        assert_eq!(icon_action(&click(MouseButton::Right, Down)), None);
+        assert_eq!(icon_action(&click(MouseButton::Right, Up)), None);
+        assert_eq!(icon_action(&click(MouseButton::Middle, Down)), None);
+        assert_eq!(icon_action(&click(MouseButton::Middle, Up)), None);
     }
 
     #[cfg(target_os = "linux")]
