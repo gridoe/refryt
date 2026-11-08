@@ -257,6 +257,30 @@ pub enum Event {
         error: String,
         epoch: u64,
     },
+    StatsLoaded {
+        report: Arc<crate::listening_stats::Report>,
+        /// The request this answers; a reply to an older one is stale.
+        epoch: u64,
+    },
+    StatsFailed {
+        error: String,
+        epoch: u64,
+    },
+    ArtistPlaysCounted {
+        id: String,
+        plays: u64,
+    },
+    TakeoutImported {
+        result: Result<crate::takeout::Summary, String>,
+    },
+    /// The account's history has been compared with the last look. Empty if the check failed.
+    HistoryChecked {
+        found: crate::history_poll::Found,
+    },
+    /// Some of the songs asked for have been looked up and saved. `done` on the last batch.
+    SongDetailsSaved {
+        done: bool,
+    },
     PlaylistCreated {
         title: String,
     },
@@ -1701,6 +1725,80 @@ impl Backend {
         });
     }
 
+    /// Add up the play log for a range, off the UI thread. `epoch` comes back with the answer.
+    pub fn load_listening_stats(&self, range: crate::listening_stats::StatsRange, epoch: u64) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let event = match crate::listening_stats::load(range) {
+                Ok(report) => Event::StatsLoaded {
+                    report: Arc::new(report),
+                    epoch,
+                },
+                Err(e) => Event::StatsFailed {
+                    error: format!("{e:#}"),
+                    epoch,
+                },
+            };
+            Self::emit(&tx, &ctx, event);
+        });
+    }
+
+    /// Look up songs an import only knew the id and title of, and save what YouTube says, a few
+    /// at a time. A song YouTube won't answer for is left as it is.
+    pub fn look_up_songs(&self, ids: Vec<String>) {
+        const AT_ONCE: usize = 4;
+        let (api, tx, ctx) = (Arc::clone(&self.api), self.tx.clone(), self.ctx.clone());
+        self.rt.spawn(async move {
+            for batch in ids.chunks(AT_ONCE) {
+                let mut lookups = tokio::task::JoinSet::new();
+                for id in batch {
+                    let (api, id) = (Arc::clone(&api), id.clone());
+                    lookups.spawn(async move {
+                        let queue = api.mix(&id).await.ok()?;
+                        let track = queue.tracks.iter().find(|t| t.video_id == id)?;
+                        Some((id, crate::play_log::SongDetails::new(track)))
+                    });
+                }
+                let mut found = Vec::new();
+                while let Some(joined) = lookups.join_next().await {
+                    found.extend(joined.ok().flatten());
+                }
+                if !found.is_empty()
+                    && let Err(e) =
+                        tokio::task::spawn_blocking(move || crate::play_log::save_details(found))
+                            .await
+                            .map_err(anyhow::Error::from)
+                            .and_then(|saved| saved)
+                {
+                    debug!(error = %format!("{e:#}"), "could not save the song details");
+                }
+                Self::emit(&tx, &ctx, Event::SongDetailsSaved { done: false });
+            }
+            Self::emit(&tx, &ctx, Event::SongDetailsSaved { done: true });
+        });
+    }
+
+    /// Bring a Google Takeout export into the play log, off the UI thread.
+    pub fn import_takeout(&self, path: std::path::PathBuf) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let result = crate::takeout::import(&path).map_err(|e| format!("{e:#}"));
+            // A long export is hundreds of megabytes of small allocations, all free by now.
+            crate::memory::trim_after_parse();
+            Self::emit(&tx, &ctx, Event::TakeoutImported { result });
+        });
+    }
+
+    /// How many times an artist has been played, for their page.
+    pub fn count_artist_plays(&self, id: String) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.rt
+            .spawn_blocking(move || match crate::listening_stats::artist_plays(&id) {
+                Ok(plays) => Self::emit(&tx, &ctx, Event::ArtistPlaysCounted { id, plays }),
+                Err(e) => debug!(error = %format!("{e:#}"), "could not read the play log"),
+            });
+    }
+
     /// What you played, in dated shelves. Signed in only — the page gates, not the call.
     /// `epoch` is the visit this serves, echoed back so a superseded refresh is dropped.
     pub fn fetch_history(&self, epoch: u64) {
@@ -1714,6 +1812,27 @@ impl Backend {
                 },
             };
             Self::emit(&tx, &ctx, event);
+        });
+    }
+
+    /// Look for plays made away from this app. `channel` says whose history this is.
+    pub fn check_history(&self, channel: String) {
+        let (api, tx, ctx) = (Arc::clone(&self.api), self.tx.clone(), self.ctx.clone());
+        self.rt.spawn(async move {
+            let found = match api.history().await {
+                Ok(shelves) => tokio::task::spawn_blocking(move || {
+                    crate::history_poll::check(&channel, &shelves, chrono::Local::now())
+                })
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|checked| checked),
+                Err(e) => Err(e),
+            };
+            let found = found.unwrap_or_else(|e| {
+                debug!(error = %format!("{e:#}"), "could not check the history");
+                Default::default()
+            });
+            Self::emit(&tx, &ctx, Event::HistoryChecked { found });
         });
     }
 
@@ -2703,7 +2822,20 @@ impl Scrobble {
         };
         let Some(tracking) = tracking else { return };
         match self.api.report_playback(&tracking.playback_url).await {
-            Ok(()) => info!(video_id = %track.video_id, title = %track.title, "play reported"),
+            Ok(()) => {
+                info!(video_id = %track.video_id, title = %track.title, "play reported");
+                let id = track.video_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    if crate::settings::load().listening_stats
+                        && let Err(e) = crate::history_poll::note_reported(
+                            &id,
+                            chrono::Local::now().timestamp(),
+                        )
+                    {
+                        debug!(error = %format!("{e:#}"), "could not note the reported play");
+                    }
+                });
+            }
             Err(e) => debug!(video_id = %track.video_id, error = %format!("{e:#}"),
                 "playback beacon refused"),
         }

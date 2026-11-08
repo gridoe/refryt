@@ -4883,6 +4883,7 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "bytes",
+ "chrono",
  "directories",
  "discord-rich-presence",
  "dispatch2",

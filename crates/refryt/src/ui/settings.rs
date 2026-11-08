@@ -13,10 +13,12 @@ use egui::RichText;
 use crate::app::App;
 use crate::auth::AuthState;
 use crate::browser_cookies;
+use crate::icons::Icon;
 use crate::settings::Opacity;
 use crate::settings::{Quality, Theme};
 use crate::theme;
 use crate::widgets;
+use crate::widgets::Hint;
 
 /// The tabs of the Settings page, in the order they are shown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -560,12 +562,141 @@ fn playback(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// How songs, playlists and Home behave, and where local music is read from.
+/// Ask for a Takeout export.
+pub(crate) fn takeout_file() -> Option<std::path::PathBuf> {
+    // A test aid for debug builds: a scripted run can't reach the system's file dialog.
+    #[cfg(debug_assertions)]
+    if let Some(file) = std::env::var_os("REFRYT_TAKEOUT_FILE") {
+        return Some(file.into());
+    }
+    rfd::FileDialog::new()
+        .add_filter("JSON", &["json"])
+        .pick_file()
+}
+
+const TAKEOUT_HELP_WIDTH: f32 = 320.0;
+
+/// A `?` that opens the steps for getting an export out of Google Takeout.
+pub(crate) fn takeout_help(ui: &mut egui::Ui, p: &theme::Palette) {
+    const STEPS: [&str; 5] = [
+        "Open Google Takeout, press Deselect all, then tick YouTube and YouTube Music.",
+        "Under All YouTube data included, keep only history.",
+        "Under Multiple formats, set history to JSON.",
+        "Create the export and download it when it's ready. This can take a while.",
+        "Unzip it and choose watch-history.json in the history folder. Its name follows your account's language.",
+    ];
+    let button = widgets::icon_button(ui, p, Icon::CircleHelp, 16.0, false)
+        .hint("How to get a Takeout export");
+    egui::Popup::new(
+        ui.id().with("takeout-help"),
+        ui.ctx().clone(),
+        &button,
+        ui.layer_id(),
+    )
+    .kind(egui::PopupKind::Menu)
+    .frame(widgets::menu_frame(ui, p))
+    .width(TAKEOUT_HELP_WIDTH)
+    .gap(4.0)
+    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+    .open_memory(button.clicked().then_some(egui::SetOpenCommand::Toggle))
+    .show(|ui| {
+        ui.set_width(TAKEOUT_HELP_WIDTH);
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("Getting your Takeout export")
+                .font(theme::semibold(13.0))
+                .color(p.text),
+        );
+        ui.add_space(4.0);
+        for (i, step) in STEPS.iter().enumerate() {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let (slot, _) =
+                    ui.allocate_exact_size(egui::vec2(14.0, 15.0), egui::Sense::hover());
+                ui.painter().text(
+                    slot.left_top(),
+                    egui::Align2::LEFT_TOP,
+                    (i + 1).to_string(),
+                    theme::regular(12.0),
+                    p.dim,
+                );
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(*step)
+                            .font(theme::regular(12.0))
+                            .color(p.secondary),
+                    )
+                    .wrap(),
+                );
+            });
+        }
+        ui.add_space(6.0);
+        if widgets::outline_button(ui, p, "Open Google Takeout").clicked() {
+            crate::open_url("https://takeout.google.com");
+            ui.close();
+        }
+        ui.add_space(2.0);
+    });
+}
+
 fn library(app: &mut App, ui: &mut egui::Ui) {
     let p = app.palette;
+    let mut listening_stats = app.settings.listening_stats;
+    let mut armed = app.stats_delete_armed;
+    let mut delete_stats = false;
+    let importing = app.takeout_importing;
+    let mut pick_takeout = false;
     let mut double_click = app.settings.double_click_to_play;
     let mut title_album = app.settings.title_opens_album;
     let mut playlist_sort = app.settings.playlist_default_sort;
     let mut open_order = false;
+
+    widgets::setting_group(ui, &p, Some("Listening stats"), |ui, g| {
+        toggle_row(
+            g,
+            ui,
+            &p,
+            "setting-listening-stats",
+            "Keep listening stats",
+            "Logs what you play here, and what your account's history shows from elsewhere. The log stays on this computer.",
+            &mut listening_stats,
+        );
+        g.row(
+            ui,
+            "Import from Google Takeout",
+            "Adds your full history from a Google Takeout export.",
+            |ui| {
+                if importing {
+                    ui.label(
+                        egui::RichText::new("Importing…")
+                            .font(theme::regular(13.0))
+                            .color(p.secondary),
+                    );
+                } else if widgets::outline_button(ui, &p, "Choose file").clicked() {
+                    pick_takeout = true;
+                }
+                ui.add_space(4.0);
+                takeout_help(ui, &p);
+            },
+        );
+        let detail = if armed {
+            "This removes every play and can't be undone."
+        } else {
+            "Removes every play kept on this computer."
+        };
+        g.row(ui, "Delete stats", detail, |ui| {
+            if armed {
+                if widgets::outline_button(ui, &p, "Cancel").clicked() {
+                    armed = false;
+                }
+                if widgets::pill_button(ui, &p, "Delete").clicked() {
+                    delete_stats = true;
+                }
+            } else if widgets::outline_button(ui, &p, "Delete").clicked() {
+                armed = true;
+            }
+        });
+    });
 
     widgets::setting_group(ui, &p, Some("Songs and playlists"), |ui, g| {
         toggle_row(
@@ -633,7 +764,15 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     }
 
     let ctx = ui.ctx().clone();
+    app.stats_delete_armed = armed;
+    if pick_takeout && let Some(file) = takeout_file() {
+        app.import_takeout(file);
+    }
+    if delete_stats {
+        app.delete_stats();
+    }
     app.update_settings(&ctx, |s| {
+        s.listening_stats = listening_stats;
         s.double_click_to_play = double_click;
         s.title_opens_album = title_album;
         s.playlist_default_sort = playlist_sort;

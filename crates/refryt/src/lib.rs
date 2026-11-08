@@ -25,6 +25,7 @@ pub mod discord;
 pub mod downloads;
 pub mod emoji;
 pub mod flatpak;
+pub mod history_poll;
 pub mod icons;
 pub mod images;
 pub mod innertube;
@@ -36,6 +37,7 @@ pub mod instance;
 #[cfg(target_os = "linux")]
 pub mod kwin;
 pub mod liked;
+pub mod listening_stats;
 pub mod local;
 pub mod local_playlists;
 pub mod media;
@@ -46,6 +48,7 @@ pub mod menu_bar;
 pub mod model;
 pub mod pacing;
 pub mod persist;
+pub mod play_log;
 pub mod playback;
 pub mod player;
 pub mod queue;
@@ -55,6 +58,7 @@ pub mod stats;
 /// Sway on Wayland: hiding the app's own window to the tray and back through the scratchpad.
 #[cfg(target_os = "linux")]
 pub mod sway;
+pub mod takeout;
 pub mod theme;
 pub mod tray;
 pub mod ui;

@@ -269,6 +269,10 @@ pub struct Settings {
     /// Colour an album or playlist header and the now-playing view from the cover: its main
     /// colour with the blurred cover in it. Off leaves the app's own colours.
     pub adaptive_art_color: bool,
+    /// Keep a log of the songs you listen to on this machine, for the Stats page.
+    pub listening_stats: bool,
+    /// The offer to import a Takeout export has had its answer, and isn't made again.
+    pub takeout_offer_answered: bool,
     /// What the resolver asks for.
     pub quality: Quality,
     /// Keep playing related songs when a hand-picked queue nears its end. YouTube's own radio,
@@ -364,6 +368,8 @@ impl Default for Settings {
             compositor_corners: false,
             scroll_fades: false,
             adaptive_art_color: true,
+            listening_stats: true,
+            takeout_offer_answered: false,
             quality: Quality::default(),
             autoplay: true,
             queue_click_keeps_order: false,
@@ -599,6 +605,26 @@ mod tests {
         // An integer is a number too.
         let zero: Settings = serde_json::from_str(r#"{"opacity":0}"#).unwrap();
         assert_eq!(zero.opacity, Opacity::OFF);
+    }
+
+    /// An older settings file hasn't answered the offer to import, so it still gets made once.
+    #[test]
+    fn the_takeout_offer_is_made_until_answered() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!old.takeout_offer_answered);
+        let answered: Settings =
+            serde_json::from_str(r#"{"takeout_offer_answered":true}"#).unwrap();
+        assert!(answered.takeout_offer_answered);
+    }
+
+    /// Stats start working by themselves, for a new install and an older settings file alike.
+    #[test]
+    fn listening_stats_are_on_until_turned_off() {
+        assert!(Settings::default().listening_stats);
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert!(old.listening_stats);
+        let off: Settings = serde_json::from_str(r#"{"listening_stats":false}"#).unwrap();
+        assert!(!off.listening_stats);
     }
 
     /// Strict Home order is opt-in: off for a new install and for a file from before it existed,

@@ -395,6 +395,10 @@ const POSITION_SAVE_EVERY: Duration = Duration::from_secs(30);
 
 /// How often the playback state is compared with what `playback.json` holds.
 const PLAYBACK_CHECK_EVERY: Duration = Duration::from_secs(1);
+/// How often to look through the account's history for plays made elsewhere.
+const HISTORY_CHECK_EVERY: Duration = Duration::from_secs(600);
+/// The least time between checks when Stats is opened, so going back and forth asks once.
+const HISTORY_CHECK_AGAIN_AFTER: Duration = Duration::from_secs(30);
 
 /// What `playback.json` was last written with, for [`playback_save_due`].
 struct SavedPlayback {
@@ -496,6 +500,10 @@ pub enum Route {
     Moods,
     /// What you played, in dated shelves. Signed in only.
     History,
+    /// What you've been listening to, from the log kept on this machine.
+    Stats,
+    /// One of Stats' top lists, past the few rows Stats shows.
+    StatsTop(crate::listening_stats::TopList),
     Library,
     Settings,
     Artist(String),
@@ -527,6 +535,9 @@ impl Route {
             "charts" => Some(Route::Charts(None)),
             "moods" => Some(Route::Moods),
             "history" => Some(Route::History),
+            "stats" => Some(Route::Stats),
+            "top-songs" => Some(Route::StatsTop(crate::listening_stats::TopList::Songs)),
+            "top-artists" => Some(Route::StatsTop(crate::listening_stats::TopList::Artists)),
             "library" => Some(Route::Library),
             "settings" => Some(Route::Settings),
             other => match other.split_once(':') {
@@ -1452,6 +1463,36 @@ pub struct App {
     pub(crate) suggestion_cursor: Option<usize>,
     /// What was searched before, offered by the search box while it is focused and empty.
     pub(crate) search_history: crate::search_history::SearchHistory,
+    /// The song being listened to, on its way to the play log.
+    listening: crate::play_log::Listening,
+    /// The range the Stats page shows.
+    pub(crate) stats_range: crate::listening_stats::StatsRange,
+    /// What the Stats page shows. An older report stays up while a newer one is added up.
+    pub(crate) stats_report: Option<Arc<crate::listening_stats::Report>>,
+    pub(crate) stats_error: Option<String>,
+    /// Which report is wanted: bumped by a new range and a new play.
+    stats_epoch: u64,
+    /// The last report asked for.
+    stats_requested: Option<u64>,
+    /// Settings' Delete stats has been pressed once, and is asking to be sure.
+    pub(crate) stats_delete_armed: bool,
+    /// An artist's id and how many times you've played them, for their page.
+    pub(crate) artist_plays: Option<(String, u64)>,
+    /// Songs being looked up for the Stats page.
+    looking_up_songs: bool,
+    /// Songs already asked about this run, so one YouTube won't answer isn't asked forever.
+    songs_asked: std::collections::HashSet<String>,
+    /// A Takeout export is on its way into the play log.
+    pub(crate) takeout_importing: bool,
+    /// When the account's history was last asked for.
+    history_checked: Option<Instant>,
+    history_checking: bool,
+    /// The history list changed too much to follow, so plays may be missing.
+    pub(crate) history_gap: bool,
+    /// Stats are off and the last history list has been dropped.
+    history_forgotten: bool,
+    /// Plays that ended during an import, which rewrites the log: added once it's done.
+    plays_during_import: Vec<crate::play_log::Play>,
     /// Escape closed the recent-searches list. Without this it would reopen on the next frame,
     /// the box still being focused and empty; typing or refocusing clears it.
     pub(crate) recent_dismissed: bool,
@@ -1520,7 +1561,7 @@ pub struct App {
     pub(crate) artist: Option<crate::model::Artist>,
     pub(crate) artist_loading: bool,
     pub(crate) artist_error: Option<String>,
-    artist_for: Option<String>,
+    pub(crate) artist_for: Option<String>,
     /// The album page being shown.
     pub(crate) album: Option<crate::model::Album>,
     pub(crate) album_loading: bool,
@@ -2092,6 +2133,22 @@ impl App {
             suggestions_for: None,
             suggestion_cursor: None,
             search_history: crate::search_history::load(),
+            listening: Default::default(),
+            stats_range: Default::default(),
+            stats_report: None,
+            stats_error: None,
+            stats_epoch: 0,
+            stats_requested: None,
+            stats_delete_armed: false,
+            artist_plays: None,
+            looking_up_songs: false,
+            songs_asked: Default::default(),
+            takeout_importing: false,
+            history_checked: None,
+            history_checking: false,
+            history_gap: false,
+            history_forgotten: false,
+            plays_during_import: Vec::new(),
             recent_dismissed: false,
             pending_search: search.is_some(),
             searched: String::new(),
@@ -2542,6 +2599,7 @@ impl App {
         if self.settings.account_page_id != before.account_page_id {
             self.backend
                 .switch_account(self.settings.account_page_id.clone());
+            self.history_checked = None;
         }
         if self.settings.hide_tray_on_close != before.hide_tray_on_close {
             // Built once, ever, the first time this turns on — not rebuilt on every toggle,
@@ -3130,6 +3188,14 @@ impl App {
         // loaded, paused or seeked is read here, a frame later.
         let state = self.read_player_state();
         self.player_state = state;
+        let done = self.listening.observe(
+            state.position,
+            state.duration,
+            state.paused,
+            state.idle,
+            unix_now(),
+        );
+        self.log_play(done);
         // Kept in sync here rather than at every `toggle_pause`/`set_paused` call site — mpv is
         // the single source of truth for this, and every row/card's play-vs-pause glyph reads
         // it off `now` rather than reaching for the player directly.
@@ -3503,6 +3569,14 @@ impl App {
         {
             crate::widgets::set_album_focus(&self.ctx, None);
         }
+        // Opening Stats looks for plays made elsewhere, unless a look has only just happened.
+        if self.current_route() == Route::Stats
+            && self
+                .history_checked
+                .is_some_and(|at| at.elapsed() >= HISTORY_CHECK_AGAIN_AFTER)
+        {
+            self.history_checked = None;
+        }
         // Settings is where the themes folder is offered, so what is in it is looked at fresh.
         if matches!(self.current_route(), Route::Settings) {
             self.theme_watch.check();
@@ -3618,6 +3692,7 @@ impl App {
             Route::Charts(params) => self.load_charts(params),
             Route::Moods => self.load_moods(),
             Route::History => self.load_history(),
+            Route::Stats | Route::StatsTop(_) => self.load_stats(),
             Route::Search | Route::Settings => {}
         }
     }
@@ -3628,6 +3703,8 @@ impl App {
         if self.artist_for.as_deref() == Some(id.as_str()) {
             return;
         }
+        self.artist_plays = None;
+        self.backend.count_artist_plays(id.clone());
         self.artist = None;
         self.artist_error = None;
         self.artist_loading = true;
@@ -4004,6 +4081,10 @@ impl App {
     /// lands at the failed attempt's offset.
     pub(crate) fn retry_route(&mut self) {
         match self.current_route() {
+            Route::Stats | Route::StatsTop(_) => {
+                self.stats_error = None;
+                self.stats_epoch += 1;
+            }
             Route::Artist(_) | Route::ArtistLiked(_) => {
                 self.artist_for = None;
                 self.artist_error = None;
@@ -5452,6 +5533,30 @@ impl App {
                 // A reply for a History visit since superseded: dropped, so a slow fetch cannot
                 // overwrite a newer one's shelves.
                 Event::HistoryLoaded { .. } | Event::HistoryFailed { .. } => {}
+                Event::StatsLoaded { report, epoch } if epoch == self.stats_epoch => {
+                    self.look_up_songs(&report.missing_details);
+                    self.stats_report = Some(report);
+                    self.stats_error = None;
+                }
+                Event::SongDetailsSaved { done } => {
+                    self.looking_up_songs = !done;
+                    self.stats_epoch += 1;
+                }
+                Event::StatsFailed { error, epoch } if epoch == self.stats_epoch => {
+                    self.stats_error = Some(error);
+                }
+                Event::StatsLoaded { .. } | Event::StatsFailed { .. } => {}
+                Event::TakeoutImported { result } => self.takeout_imported(result),
+                Event::HistoryChecked { found } => {
+                    self.history_checking = false;
+                    self.history_gap = found.gap;
+                    for play in found.plays {
+                        self.log_play(Some(play));
+                    }
+                }
+                Event::ArtistPlaysCounted { id, plays } => {
+                    self.artist_plays = Some((id, plays));
+                }
                 Event::PlaylistCreated { title } => {
                     self.toast(&format!("Created “{title}”"));
                     // The rail lists what the library holds, so it has to be asked again before
@@ -5711,6 +5816,8 @@ impl App {
                 Event::Resolving(..) => {}
                 Event::Playing(mut track, generation) if generation == self.play_generation => {
                     self.reconcile_state(&mut track);
+                    let done = self.listening.started(&track, unix_now());
+                    self.log_play(done);
                     let video_id = track.video_id.clone();
                     let wide = track.wide;
                     self.now = NowPlaying {
@@ -7194,6 +7301,158 @@ impl App {
         self.backend.fetch_history(self.history_epoch);
     }
 
+    /// Ask for the Stats page's report, unless it is the one already asked for.
+    fn load_stats(&mut self) {
+        if self.stats_requested == Some(self.stats_epoch) || self.stats_error.is_some() {
+            return;
+        }
+        self.stats_requested = Some(self.stats_epoch);
+        self.backend
+            .load_listening_stats(self.stats_range, self.stats_epoch);
+    }
+
+    /// Show another range on the Stats page.
+    pub(crate) fn set_stats_range(&mut self, range: crate::listening_stats::StatsRange) {
+        if self.stats_range != range {
+            self.stats_range = range;
+            self.stats_error = None;
+            self.stats_epoch += 1;
+        }
+    }
+
+    /// Forget every play, from Settings once it has asked twice.
+    pub(crate) fn delete_stats(&mut self) {
+        self.stats_delete_armed = false;
+        match crate::play_log::delete() {
+            Ok(()) => {
+                self.listening = Default::default();
+                self.artist_plays = None;
+                self.songs_asked.clear();
+                self.stats_report = None;
+                self.stats_epoch += 1;
+                self.toast("Deleted your stats");
+            }
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "could not delete the play log");
+                self.toast_error("Could not delete your stats");
+            }
+        }
+    }
+
+    /// Ask YouTube about top songs an import left with only a title.
+    fn look_up_songs(&mut self, missing: &[String]) {
+        if self.looking_up_songs || self.offline {
+            return;
+        }
+        let ids: Vec<String> = missing
+            .iter()
+            .filter(|id| self.songs_asked.insert((*id).clone()))
+            .cloned()
+            .collect();
+        if !ids.is_empty() {
+            self.looking_up_songs = true;
+            self.backend.look_up_songs(ids);
+        }
+    }
+
+    /// Look for plays made away from this app when it's time to. Asks for a frame at the next
+    /// check, since an idle app paints none to notice it on.
+    fn history_step(&mut self, ctx: &egui::Context) {
+        if !self.settings.listening_stats {
+            if !self.history_forgotten {
+                self.history_forgotten = true;
+                if let Err(e) = crate::history_poll::forget() {
+                    tracing::warn!(error = %format!("{e:#}"), "could not forget the history list");
+                }
+            }
+            return;
+        }
+        self.history_forgotten = false;
+        if !self.signed_in() || self.offline || self.takeout_importing || self.history_checking {
+            return;
+        }
+        let due = self.history_checked.map_or(Duration::ZERO, |at| {
+            HISTORY_CHECK_EVERY.saturating_sub(at.elapsed())
+        });
+        if due.is_zero() {
+            tracing::debug!("looking through the account's history");
+            self.history_checked = Some(Instant::now());
+            self.history_checking = true;
+            self.backend.check_history(self.history_channel());
+        } else {
+            ctx.request_repaint_after(due);
+        }
+    }
+
+    /// Whose history a check is reading: the channel picked in the account menu, on this account.
+    fn history_channel(&self) -> String {
+        let account = match &self.auth {
+            crate::auth::AuthState::SignedIn { account, .. } => account.as_str(),
+            _ => "",
+        };
+        format!(
+            "{account}/{}",
+            self.settings.account_page_id.as_deref().unwrap_or_default()
+        )
+    }
+
+    /// The note about plays that may be missing has been answered.
+    pub(crate) fn clear_history_gap(&mut self) {
+        self.history_gap = false;
+        if let Err(e) = crate::history_poll::clear_gap() {
+            tracing::warn!(error = %format!("{e:#}"), "could not save the history list");
+        }
+    }
+
+    /// Bring a Takeout export into the play log.
+    pub(crate) fn import_takeout(&mut self, path: std::path::PathBuf) {
+        if !self.takeout_importing {
+            self.takeout_importing = true;
+            self.backend.import_takeout(path);
+        }
+    }
+
+    /// An import has finished, one way or the other.
+    fn takeout_imported(&mut self, result: Result<crate::takeout::Summary, String>) {
+        self.takeout_importing = false;
+        for play in std::mem::take(&mut self.plays_during_import) {
+            self.log_play(Some(play));
+        }
+        match result {
+            Ok(summary) => {
+                self.clear_history_gap();
+                self.stats_error = None;
+                self.stats_epoch += 1;
+                self.artist_for = None;
+                let added = crate::listening_stats::plays_label(summary.added);
+                self.toast(&format!(
+                    "Imported {added}, {} already there",
+                    summary.skipped
+                ));
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not import the Takeout export");
+                self.toast_error(&failure_text("Could not import that file", &error));
+            }
+        }
+    }
+
+    /// A listen has ended that counts, if `play` says so.
+    fn log_play(&mut self, play: Option<crate::play_log::Play>) {
+        let Some(play) = play.filter(|_| self.settings.listening_stats) else {
+            return;
+        };
+        if self.takeout_importing {
+            self.plays_during_import.push(play);
+            return;
+        }
+        if let Err(e) = crate::play_log::append(&play) {
+            tracing::warn!(error = %format!("{e:#}"), "could not add to the play log");
+            return;
+        }
+        self.stats_epoch += 1;
+    }
+
     /// Make a new playlist on your account and show it in the rail.
     pub(crate) fn create_playlist(&mut self, title: String) {
         if !self.signed_in() {
@@ -7961,6 +8220,12 @@ fn scripted_input(raw_input: &mut egui::RawInput) {
 }
 
 impl eframe::App for App {
+    /// The song playing as the app closes still counts.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let done = self.listening.finish();
+        self.log_play(done);
+    }
+
     /// eframe calls this periodically and on exit, so the queue survives a normal close as well
     /// as the five-second periodic save.
     ///
@@ -8038,6 +8303,7 @@ impl eframe::App for App {
             self.show_window(ctx);
         }
         self.transport_step(ctx);
+        self.history_step(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -8410,6 +8676,10 @@ impl eframe::App for App {
                         if self.offline && !offline_page {
                             ui::offline_banner(self, ui);
                         }
+                        if route == Route::Stats {
+                            ui::listening::takeout_offer(self, ui);
+                            ui::listening::history_gap_note(self, ui);
+                        }
                         match route {
                             Route::Search => ui::search::page(self, ui),
                             Route::Explore => ui::explore::page(self, ui),
@@ -8418,6 +8688,8 @@ impl eframe::App for App {
                             Route::Moods => ui::moods::page(self, ui),
                             Route::HomeShelf(title) => ui::home::shelf_page(self, ui, &title),
                             Route::History => ui::history::page(self, ui),
+                            Route::Stats => ui::listening::page(self, ui),
+                            Route::StatsTop(list) => ui::listening::top_page(self, ui, list),
                             Route::Home => ui::home::page(self, ui),
                             Route::Library => ui::library::page(self, ui),
                             Route::Settings => ui::settings::page(self, ui),

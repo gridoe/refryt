@@ -65,6 +65,20 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
 
 /// The hero when the page carries wide channel art, the circle header otherwise, then the
 /// controls on their own row below either.
+/// How many times you've played the artist on the page, once there's anything to say.
+fn your_plays(app: &App) -> Option<String> {
+    let (id, plays) = app.artist_plays.as_ref()?;
+    (*plays > 0 && app.artist_for.as_deref() == Some(id.as_str()))
+        .then(|| crate::listening_stats::plays_label(*plays))
+}
+
+fn with_your_plays(audience: String, yours: Option<String>) -> String {
+    match yours {
+        Some(plays) => format!("{audience} • {plays} by you"),
+        None => audience,
+    }
+}
+
 fn header(app: &mut App, ui: &mut egui::Ui) {
     let has_hero = app.artist.as_ref().is_some_and(|a| a.hero.is_some());
     if has_hero {
@@ -356,10 +370,13 @@ fn hero_header(app: &mut App, ui: &mut egui::Ui) {
             // The monthly audience alone, as the site shows it. A small artist has none — then
             // the subscriber line takes its place, complete with its word ("965 subscribers"),
             // never the bare button count.
-            a.monthly_listeners
-                .clone()
-                .or_else(|| a.subscribers_long.clone())
-                .unwrap_or_else(|| "Artist".to_owned()),
+            with_your_plays(
+                a.monthly_listeners
+                    .clone()
+                    .or_else(|| a.subscribers_long.clone())
+                    .unwrap_or_else(|| "Artist".to_owned()),
+                your_plays(app),
+            ),
             a.hero.clone(),
         )
     };
@@ -532,6 +549,7 @@ fn hero_rows(rect: egui::Rect, slice: egui::Rect, start: f32) -> Vec<(f32, f32, 
 /// The fallback for a page with no wide art (a channel's visual header): the square portrait in
 /// a circle, name and audience beside it — what every artist page looked like before the hero.
 fn circle_header(app: &mut App, ui: &mut egui::Ui) {
+    let yours = your_plays(app);
     let (art_top, art_bottom) = {
         let crate::app::App {
             palette,
@@ -549,6 +567,7 @@ fn circle_header(app: &mut App, ui: &mut egui::Ui) {
             .clone()
             .or_else(|| a.subscribers_long.clone())
             .unwrap_or_else(|| "Artist".to_owned());
+        let audience = with_your_plays(audience, yours);
         let art_top = ui.cursor().top();
         let out = crate::ui::page_header(
             ui,
