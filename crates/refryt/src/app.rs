@@ -1374,11 +1374,11 @@ fn hide_command(hide: bool) -> egui::ViewportCommand {
 /// Hide the window to the tray, or show it again: [`hide_command`], and on Plasma's Wayland the
 /// rest of the hide through KWin (`kwin`), which takes the window off the taskbar, the pager and
 /// Alt+Tab, as on Windows. The way back is [`request_foreground`], which every show is followed
-/// by and which restores it there. On Sway neither half goes through the viewport at all:
-/// minimise requests are ignored there, so the scratchpad is both directions (`sway`).
+/// by and which restores it there. On Sway's Wayland neither half goes through the viewport at
+/// all: minimise requests are ignored there, so the scratchpad is both directions (`sway`).
 fn set_window_hidden(ctx: &egui::Context, hide: bool) {
     #[cfg(target_os = "linux")]
-    if crate::sway::is_sway() {
+    if crate::sway::handles_hiding(is_wayland()) {
         crate::sway::set_hidden(hide);
         return;
     }

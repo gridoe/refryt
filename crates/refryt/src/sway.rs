@@ -8,12 +8,14 @@
 //!
 //! Sway's own answer to hiding is the scratchpad: `move scratchpad` takes the window off the
 //! workspace, `scratchpad show` brings it back focused on the current one. That is exactly the
-//! tray's hide/show, driven here through `swaymsg` with an `app_id` criterion so only this
-//! process's window is touched. It runs only on Sway, and only on this process's own window.
+//! tray's hide/show, driven here through `swaymsg` with a `pid` criterion so only this
+//! process's window is touched, whatever its `app_id` (the Flatpak's is its own id, not
+//! "refryt"). It runs only for a native Wayland window on Sway: under XWayland the window
+//! hides with `Visible(false)` like any other X11 one.
 //!
-//! Best-effort throughout: off Sway, without `swaymsg` on `PATH`, or from a sandbox without
-//! the IPC socket, the call fails quietly and the caller falls back to the minimise
-//! best-effort, as it was before.
+//! Where `swaymsg` cannot run at all (not on `PATH`, or inside the Flatpak sandbox),
+//! [`handles_hiding`] says no and the caller keeps the minimise best-effort, as before. A
+//! single call that fails after that is logged at debug level and changes nothing.
 
 use std::sync::OnceLock;
 use std::sync::mpsc::{Sender, channel};
@@ -21,10 +23,28 @@ use std::sync::mpsc::{Sender, channel};
 use anyhow::{Context, Result};
 
 /// Whether this session is Sway's, where `swaymsg` can move the window.
-pub fn is_sway() -> bool {
+fn is_sway() -> bool {
     std::env::var_os("SWAYSOCK").is_some_and(|sock| !sock.is_empty())
         || std::env::var("XDG_CURRENT_DESKTOP")
             .is_ok_and(|desktop| desktop.split(':').any(|d| d.eq_ignore_ascii_case("sway")))
+}
+
+/// Whether hiding to the tray goes through the scratchpad here: a native Wayland window
+/// (`wayland`) on Sway, with a `swaymsg` that runs.
+pub fn handles_hiding(wayland: bool) -> bool {
+    wayland && is_sway() && available()
+}
+
+/// Whether `swaymsg` runs from this process at all. Asked once: the answer cannot change while
+/// the app runs.
+fn available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        std::process::Command::new("swaymsg")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+    })
 }
 
 /// Hide this process's window to the tray (`true`), or bring it back focused (`false`).
@@ -63,10 +83,14 @@ pub fn set_hidden(hidden: bool) {
     let _ = worker.send(hidden);
 }
 
-/// The `swaymsg` criterion matching this process's main window only: eframe names the
-/// window's `app_id` after the crate (`"app_id": "refryt"` in `swaymsg -t get_tree`).
+/// The `swaymsg` criterion matching this process's window only. The pid, not the `app_id`:
+/// that is the Flatpak id inside the sandbox, and another program could share "refryt".
 fn criteria() -> String {
-    "[app_id=\"refryt\"]".to_owned()
+    criteria_for(std::process::id())
+}
+
+fn criteria_for(pid: u32) -> String {
+    format!("[pid={pid}]")
 }
 
 /// The scratchpad operation for each direction: away on hide, back and focused on show.
@@ -114,16 +138,16 @@ impl HiddenState {
             return Self::default();
         }
         serde_json::from_slice(&out.stdout)
-            .map(|tree| find_window(&tree))
+            .map(|tree| find_window(&tree, std::process::id()))
             .unwrap_or_default()
     }
 }
 
-/// The window's state, if it is anywhere in the tree: fullscreen when its `fullscreen_mode`
-/// is anything but off, floating when it sits under a `floating_nodes` list.
-fn find_window(tree: &serde_json::Value) -> HiddenState {
-    fn walk(node: &serde_json::Value, floating: bool) -> Option<HiddenState> {
-        if node.get("app_id").and_then(|id| id.as_str()) == Some("refryt") {
+/// The state of the window `pid` owns, if it is anywhere in the tree: fullscreen when its
+/// `fullscreen_mode` is anything but off, floating when it sits under a `floating_nodes` list.
+fn find_window(tree: &serde_json::Value, pid: u32) -> HiddenState {
+    fn walk(node: &serde_json::Value, pid: u32, floating: bool) -> Option<HiddenState> {
+        if node.get("pid").and_then(|p| p.as_u64()) == Some(u64::from(pid)) {
             return Some(HiddenState {
                 fullscreen: node
                     .get("fullscreen_mode")
@@ -136,7 +160,7 @@ fn find_window(tree: &serde_json::Value) -> HiddenState {
         for key in ["nodes", "floating_nodes"] {
             if let Some(kids) = node.get(key).and_then(|k| k.as_array()) {
                 for kid in kids {
-                    if let Some(found) = walk(kid, floating || key == "floating_nodes") {
+                    if let Some(found) = walk(kid, pid, floating || key == "floating_nodes") {
                         return Some(found);
                     }
                 }
@@ -144,7 +168,7 @@ fn find_window(tree: &serde_json::Value) -> HiddenState {
         }
         None
     }
-    walk(tree, false).unwrap_or_default()
+    walk(tree, pid, false).unwrap_or_default()
 }
 
 /// Put the window back the way it left: fullscreen again when it left fullscreen (the
@@ -156,7 +180,7 @@ fn restore(back: HiddenState) -> Result<()> {
         return set_fullscreen();
     }
     if !back.floating {
-        untilt()?;
+        retile()?;
     }
     Ok(())
 }
@@ -167,7 +191,7 @@ fn set_fullscreen() -> Result<()> {
 }
 
 /// Retile the window after the scratchpad showed it back floating.
-fn untilt() -> Result<()> {
+fn retile() -> Result<()> {
     sway_op("floating disable")
 }
 
@@ -191,8 +215,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_criterion_targets_this_app_id_only() {
-        assert_eq!(criteria(), "[app_id=\"refryt\"]");
+    fn the_criterion_targets_this_process_only() {
+        assert_eq!(criteria_for(4242), "[pid=4242]");
+        assert_eq!(criteria(), format!("[pid={}]", std::process::id()));
+    }
+
+    #[test]
+    fn an_x11_window_never_goes_through_sway() {
+        assert!(!handles_hiding(false));
     }
 
     #[test]
@@ -205,20 +235,21 @@ mod tests {
     fn fullscreen_is_read_off_our_window_only() {
         let tree = serde_json::json!({
             "nodes": [
-                {"app_id": "foot", "fullscreen_mode": 1, "nodes": [], "floating_nodes": []},
-                {"app_id": "refryt", "fullscreen_mode": 0, "nodes": [], "floating_nodes": []},
+                {"pid": 7, "app_id": "foot", "fullscreen_mode": 1, "nodes": [], "floating_nodes": []},
+                {"pid": 42, "app_id": "io.github.gridoe.refryt", "fullscreen_mode": 0, "nodes": [], "floating_nodes": []},
+                {"pid": 9, "app_id": "refryt", "fullscreen_mode": 1, "nodes": [], "floating_nodes": []},
             ],
             "floating_nodes": [],
         });
-        let left = find_window(&tree);
+        let left = find_window(&tree, 42);
         assert!(!left.fullscreen && !left.floating);
         let tree = serde_json::json!({
             "nodes": [],
             "floating_nodes": [
-                {"app_id": "refryt", "fullscreen_mode": 1, "nodes": [], "floating_nodes": []},
+                {"pid": 42, "app_id": "refryt", "fullscreen_mode": 1, "nodes": [], "floating_nodes": []},
             ],
         });
-        let left = find_window(&tree);
+        let left = find_window(&tree, 42);
         assert!(left.fullscreen && left.floating);
     }
 }
