@@ -55,6 +55,9 @@ pub mod queue;
 pub mod search_history;
 pub mod settings;
 pub mod stats;
+/// Sway on Wayland: hiding the app's own window to the tray and back through the scratchpad.
+#[cfg(target_os = "linux")]
+pub mod sway;
 pub mod takeout;
 pub mod theme;
 pub mod tray;
