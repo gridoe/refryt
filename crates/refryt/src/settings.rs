@@ -191,6 +191,71 @@ impl<'de> Deserialize<'de> for Opacity {
     }
 }
 
+/// The most the song cache may hold: one stop on the Settings slider, smallest first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheSize {
+    Mb250,
+    Mb500,
+    Gb1,
+    Gb2,
+    Gb5,
+    #[default]
+    Gb10,
+    Gb20,
+    Gb50,
+    Unlimited,
+}
+
+impl CacheSize {
+    pub const ALL: [CacheSize; 9] = [
+        CacheSize::Mb250,
+        CacheSize::Mb500,
+        CacheSize::Gb1,
+        CacheSize::Gb2,
+        CacheSize::Gb5,
+        CacheSize::Gb10,
+        CacheSize::Gb20,
+        CacheSize::Gb50,
+        CacheSize::Unlimited,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CacheSize::Mb250 => "250 MB",
+            CacheSize::Mb500 => "500 MB",
+            CacheSize::Gb1 => "1 GB",
+            CacheSize::Gb2 => "2 GB",
+            CacheSize::Gb5 => "5 GB",
+            CacheSize::Gb10 => "10 GB",
+            CacheSize::Gb20 => "20 GB",
+            CacheSize::Gb50 => "50 GB",
+            CacheSize::Unlimited => "No limit",
+        }
+    }
+
+    /// The cap in bytes; `u64::MAX` for no limit, which nothing ever reaches.
+    pub fn bytes(self) -> u64 {
+        const MB: u64 = 1024 * 1024;
+        match self {
+            CacheSize::Mb250 => 250 * MB,
+            CacheSize::Mb500 => 500 * MB,
+            CacheSize::Gb1 => 1024 * MB,
+            CacheSize::Gb2 => 2 * 1024 * MB,
+            CacheSize::Gb5 => 5 * 1024 * MB,
+            CacheSize::Gb10 => 10 * 1024 * MB,
+            CacheSize::Gb20 => 20 * 1024 * MB,
+            CacheSize::Gb50 => 50 * 1024 * MB,
+            CacheSize::Unlimited => u64::MAX,
+        }
+    }
+
+    /// Where this size sits on the slider.
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|s| *s == self).unwrap_or(0)
+    }
+}
+
 /// What to ask `yt-dlp` for.
 ///
 /// YouTube Music's ceiling without the official player is Opus ~160k (itag 251); the lower
@@ -309,6 +374,14 @@ pub struct Settings {
     /// Report plays to the signed-in account's watch history. Anonymous listening never
     /// reports — there is no account to count on — so this only matters while signed in.
     pub scrobble: bool,
+    /// Keep songs on disk as they stream, so they replay instantly and still play if the
+    /// connection drops. Off by default.
+    pub cache_songs: bool,
+    /// Empty the song cache each time the app closes, instead of keeping it for next time.
+    /// Off by default.
+    pub cache_clear_on_close: bool,
+    /// The most the song cache may hold.
+    pub cache_size: CacheSize,
     /// The brand account to browse as, when the signed-in Google account has more than one.
     /// `None` is the personal channel.
     pub account_page_id: Option<String>,
@@ -382,6 +455,9 @@ impl Default for Settings {
             double_click_to_play: true,
             title_opens_album: false,
             scrobble: true,
+            cache_songs: false,
+            cache_clear_on_close: false,
+            cache_size: CacheSize::default(),
             account_page_id: None,
             playlist_order: Vec::new(),
             start_on_boot: false,

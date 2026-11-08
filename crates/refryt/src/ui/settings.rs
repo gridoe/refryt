@@ -15,7 +15,7 @@ use crate::auth::AuthState;
 use crate::browser_cookies;
 use crate::icons::Icon;
 use crate::settings::Opacity;
-use crate::settings::{Quality, Theme};
+use crate::settings::{CacheSize, Quality, Theme};
 use crate::theme;
 use crate::widgets;
 use crate::widgets::Hint;
@@ -372,19 +372,9 @@ fn appearance(app: &mut App, ui: &mut egui::Ui) {
                     // edge so the changing digits move nothing: a percentage of the
                     // slider's whole range, which reaches past the old maximum — not of the
                     // composite alpha.
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(34.0, 20.0),
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            ui.label(
-                                RichText::new(&percent)
-                                    .font(theme::regular(12.0))
-                                    .color(p.text),
-                            );
-                        },
-                    );
+                    value_slot(ui, &p, &percent, 34.0);
                     ui.add_space(4.0);
-                    widgets::slider(ui, &p, &mut sheer, 0.0..=Opacity::MAX, 150.0);
+                    widgets::slider(ui, &p, &mut sheer, 0.0..=Opacity::MAX, 150.0, 11);
                 });
             },
         );
@@ -501,6 +491,9 @@ fn playback(app: &mut App, ui: &mut egui::Ui) {
     let mut keep_order = app.settings.queue_click_keeps_order;
     let mut normalise = app.settings.normalise_volume;
     let mut scrobble = app.settings.scrobble;
+    let mut cache_songs = app.settings.cache_songs;
+    let mut cache_clear_on_close = app.settings.cache_clear_on_close;
+    let mut cache_size = app.settings.cache_size;
 
     widgets::setting_group(ui, &p, Some("Sound"), |ui, g| {
         g.row(ui, "Audio quality", quality.detail(), |ui| {
@@ -519,6 +512,63 @@ fn playback(app: &mut App, ui: &mut egui::Ui) {
             "Keeps the volume consistent between tracks.",
             &mut normalise,
         );
+    });
+
+    widgets::setting_group(ui, &p, Some("Cache"), |ui, g| {
+        toggle_row(
+            g,
+            ui,
+            &p,
+            "setting-cache-songs",
+            "Cache songs",
+            "Keeps songs you play on this computer, so they start at once and still play if the connection drops.",
+            &mut cache_songs,
+        );
+        if cache_songs {
+            toggle_row(
+                g,
+                ui,
+                &p,
+                "setting-cache-clear-on-close",
+                "Delete the cache on restart",
+                "Empties the cache each time Refryt closes.",
+                &mut cache_clear_on_close,
+            );
+            g.row(
+                ui,
+                "Cache size",
+                "The songs played longest ago make room for new ones.",
+                |ui| {
+                    // Like Transparency: the size in a slot at the right edge as wide as the
+                    // widest size, so the slider never shifts under the pointer, and the
+                    // slider to its left with a mark for each size. A drag only previews: the
+                    // cache is trimmed to the size let go on, not to every size passed.
+                    let font = theme::regular(12.0);
+                    let slot = CacheSize::ALL
+                        .iter()
+                        .map(|size| widgets::text_width(ui, size.label(), &font))
+                        .fold(0.0, f32::max)
+                        .ceil();
+                    let drag_id = ui.id().with("cache-size-drag");
+                    let last = (CacheSize::ALL.len() - 1) as f32;
+                    let mut stop = ui
+                        .data(|d| d.get_temp::<f32>(drag_id))
+                        .unwrap_or(cache_size.index() as f32);
+                    let shown = CacheSize::ALL[stop.round().clamp(0.0, last) as usize];
+                    value_slot(ui, &p, shown.label(), slot);
+                    ui.add_space(4.0);
+                    let response =
+                        widgets::slider(ui, &p, &mut stop, 0.0..=last, 150.0, CacheSize::ALL.len());
+                    let stop = stop.round().clamp(0.0, last);
+                    if response.dragged() {
+                        ui.data_mut(|d| d.insert_temp(drag_id, stop));
+                    } else {
+                        ui.data_mut(|d| d.remove::<f32>(drag_id));
+                        cache_size = CacheSize::ALL[stop as usize];
+                    }
+                },
+            );
+        }
     });
 
     widgets::setting_group(ui, &p, Some("Queue and history"), |ui, g| {
@@ -558,7 +608,24 @@ fn playback(app: &mut App, ui: &mut egui::Ui) {
         s.queue_click_keeps_order = keep_order;
         s.normalise_volume = normalise;
         s.scrobble = scrobble;
+        s.cache_songs = cache_songs;
+        s.cache_clear_on_close = cache_clear_on_close;
+        s.cache_size = cache_size;
     });
+}
+
+/// A slider's value at the right edge of a right-to-left row, in a slot exactly `width` wide
+/// whatever the text: a slot that followed the text would move the slider beside it, so the
+/// same pointer position would read as another value from one frame to the next.
+fn value_slot(ui: &mut egui::Ui, p: &theme::Palette, text: &str, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::hover());
+    ui.painter().text(
+        rect.right_center(),
+        egui::Align2::RIGHT_CENTER,
+        text,
+        theme::regular(12.0),
+        p.text,
+    );
 }
 
 /// How songs, playlists and Home behave, and where local music is read from.

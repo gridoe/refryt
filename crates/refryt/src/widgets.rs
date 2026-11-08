@@ -5340,53 +5340,99 @@ const SCROLL_PER_NOTCH: f32 = 120.0;
 /// Speaker icon plus a track. Click, drag, or scroll to set the volume (0-100); unmuting
 /// restores `unmute_to` — the volume you had, kept by the caller — rather than a hardcoded
 /// guess.
-/// A flat horizontal slider: a 4pt track with a filled portion and a knob that appears under
-/// the pointer. The Settings page's transparency control — `volume_slider` keeps its own icon,
-/// mute and scroll behaviour rather than growing flags.
+/// A Settings slider: a 4pt track filled in the accent up to a round knob, with `ticks` short
+/// marks under it, evenly spaced from end to end (0 for none). The marks up to the knob are lit.
+/// `volume_slider` keeps its own icon, mute and scroll behaviour rather than growing flags.
+///
+/// The track is inset by the knob's radius, so the knob never leaves the slider's rect and the
+/// first and last marks sit exactly under the knob at either end.
 pub fn slider(
     ui: &mut Ui,
     palette: &Palette,
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
     width: f32,
+    ticks: usize,
 ) -> egui::Response {
+    const KNOB: f32 = 7.0;
     let (lo, hi) = (*range.start(), *range.end());
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click_and_drag());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 26.0), Sense::click_and_drag());
+    let bar = Rect::from_min_max(
+        egui::pos2(rect.left() + KNOB, rect.top() + 9.0),
+        egui::pos2(rect.right() - KNOB, rect.top() + 13.0),
+    );
 
     if (response.clicked() || response.dragged())
         && let Some(pos) = response.interact_pointer_pos()
     {
-        let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+        let t = ((pos.x - bar.left()) / bar.width()).clamp(0.0, 1.0);
         *value = lo + t * (hi - lo);
     }
 
     if ui.is_rect_visible(rect) {
-        let bar = Rect::from_center_size(rect.center(), vec2(rect.width(), 4.0));
         let t = if hi > lo {
             ((*value - lo) / (hi - lo)).clamp(0.0, 1.0)
         } else {
             0.0
         };
+        let enabled = ui.is_enabled();
+        let lit = enabled && (response.hovered() || response.dragged());
+        let knob_x = bar.left() + bar.width() * t;
+        let fill = if !enabled {
+            palette.dim
+        } else if lit {
+            palette.accent_hover
+        } else {
+            palette.accent
+        };
         let radius = CornerRadius::same(2);
-        ui.painter()
-            .rect_filled(bar, radius, palette.glass(palette.surface_active));
-        ui.painter().rect_filled(
-            Rect::from_min_size(bar.min, vec2(bar.width() * t, bar.height())),
+        let painter = ui.painter();
+        painter.rect_filled(bar, radius, palette.glass(palette.surface_active));
+        painter.rect_filled(
+            Rect::from_min_max(bar.min, egui::pos2(knob_x, bar.max.y)),
             radius,
-            if response.hovered() || response.dragged() {
+            fill,
+        );
+        if ticks > 1 {
+            let step = bar.width() / (ticks - 1) as f32;
+            for i in 0..ticks {
+                let x = bar.left() + step * i as f32;
+                let on = x <= knob_x + 0.5;
+                painter.rect_filled(
+                    Rect::from_center_size(
+                        egui::pos2(x, bar.bottom() + 7.0),
+                        vec2(1.0, if i == 0 || i == ticks - 1 { 5.0 } else { 3.0 }),
+                    ),
+                    0.0,
+                    if on && enabled {
+                        palette.dim
+                    } else {
+                        palette.dim.gamma_multiply(0.45)
+                    },
+                );
+            }
+        }
+        let centre = egui::pos2(knob_x, bar.center().y);
+        // A small, quiet knob that only grows and brightens under the pointer.
+        let r = if response.is_pointer_button_down_on() {
+            KNOB - 2.0
+        } else if lit {
+            KNOB - 1.0
+        } else {
+            KNOB - 2.5
+        };
+        painter.circle_filled(
+            centre,
+            r,
+            if !enabled {
+                palette.dim
+            } else if lit {
                 palette.text
             } else {
                 palette.secondary
             },
         );
-        if response.hovered() || response.dragged() {
-            ui.painter().circle_filled(
-                egui::pos2(bar.min.x + bar.width() * t, bar.center().y),
-                5.0,
-                palette.text,
-            );
-        }
-        if response.hovered() {
+        if lit {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
     }

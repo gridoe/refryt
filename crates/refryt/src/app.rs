@@ -2082,6 +2082,10 @@ impl App {
 
         let backend = Backend::new(cc.egui_ctx.clone())?;
         backend.set_audio_quality(settings.quality.format());
+        backend.open_song_cache(settings.cache_songs && !settings.cache_clear_on_close);
+        if settings.cache_songs {
+            backend.set_song_cache(true, settings.cache_size.bytes());
+        }
         // One handle per process; a failure just means running without OS media controls.
         let media = crate::media::Media::new(cc.egui_ctx.clone(), window_hwnd(cc));
         // libmpv is initialised on the first play, not here — see `Player`.
@@ -2595,6 +2599,14 @@ impl App {
             let order = crate::model::normalise_order(&self.settings.home_order);
             let shelves: &mut Vec<crate::model::Shelf> = Arc::make_mut(home);
             crate::model::order_home(shelves, &order);
+        }
+        if self.settings.cache_songs != before.cache_songs {
+            self.backend
+                .set_song_cache(self.settings.cache_songs, self.settings.cache_size.bytes());
+        } else if self.settings.cache_size != before.cache_size {
+            // Only the cap moved: what is recording now carries on.
+            self.backend
+                .set_song_cache_limit(self.settings.cache_size.bytes());
         }
         if self.settings.account_page_id != before.account_page_id {
             self.backend
@@ -8224,6 +8236,8 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let done = self.listening.finish();
         self.log_play(done);
+        self.backend
+            .close_song_cache(self.settings.cache_songs && !self.settings.cache_clear_on_close);
     }
 
     /// eframe calls this periodically and on exit, so the queue survives a normal close as well
