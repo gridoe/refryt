@@ -593,10 +593,12 @@ fn draw(app: &mut App, ui: &mut egui::Ui) {
     // Kept in the window, the view takes the shell's shape: a title strip the height of the top
     // bar, over a card inset by the gutter as the page card is. Fullscreen, it is the screen.
     let was = app.fs.frame.shown;
-    let windowed = app
-        .fs
-        .frame
-        .step(in_window(&ctx), ctx.content_rect().size(), Instant::now());
+    let windowed = app.fs.frame.step(
+        in_window(&ctx),
+        ctx.content_rect().size(),
+        ctx.input(|i| i.viewport().monitor_size),
+        Instant::now(),
+    );
     if app.fs.frame.holding() {
         ctx.request_repaint();
     }
@@ -973,8 +975,9 @@ fn in_window(ctx: &egui::Context) -> bool {
     !crate::window_fullscreen::is(ctx)
 }
 
-/// How long a layout waits for the window's new size. A change between two states of the same
-/// size (maximised to fullscreen, on a screen with no panels) never brings one.
+/// How long a layout waits for the window's new size, when one could still come. A change between
+/// two states of the same size never brings one; where that is known, nothing waits (see
+/// [`WindowFrame::step`]).
 const WINDOW_SIZE_WAIT: Duration = Duration::from_millis(500);
 
 /// How recent a change of size must be to count as the window's answer to a change of state.
@@ -992,24 +995,50 @@ pub struct WindowFrame {
     /// The size last frame, and when it last changed.
     size: Option<egui::Vec2>,
     resized: Option<Instant>,
+    /// The size while last in the window, which leaving fullscreen goes back to.
+    windowed_size: Option<egui::Vec2>,
+}
+
+/// Two sizes the same to within a point, rounding aside.
+fn same_size(a: egui::Vec2, b: egui::Vec2) -> bool {
+    (a - b).abs().max_elem() < 1.0
 }
 
 impl WindowFrame {
-    /// The layout for this frame, `true` for in the window.
-    fn step(&mut self, windowed: bool, size: egui::Vec2, now: Instant) -> bool {
+    /// The layout for this frame, `true` for in the window. `monitor` is the screen's size, where
+    /// known.
+    ///
+    /// No size is coming when the window is already the size it is going to: the screen's going
+    /// fullscreen (a window filling a screen with no panels, or a hidden one), or the size it had
+    /// in the window coming back out. Then the layout changes at once instead of waiting.
+    fn step(
+        &mut self,
+        windowed: bool,
+        size: egui::Vec2,
+        monitor: Option<egui::Vec2>,
+        now: Instant,
+    ) -> bool {
         if self.size.replace(size).is_some_and(|last| last != size) {
             self.resized = Some(now);
         }
         let shown = *self.shown.get_or_insert(windowed);
         if shown == windowed {
             self.held = None;
+            if windowed {
+                self.windowed_size = Some(size);
+            }
             return shown;
         }
         let since = *self.held.get_or_insert(now);
         let answered = self
             .resized
             .is_some_and(|at| now.duration_since(at) < WINDOW_SIZE_RECENT);
-        if answered || now.duration_since(since) >= WINDOW_SIZE_WAIT {
+        let already_there = if windowed {
+            self.windowed_size.is_some_and(|w| same_size(w, size))
+        } else {
+            monitor.is_some_and(|m| same_size(m, size))
+        };
+        if answered || already_there || now.duration_since(since) >= WINDOW_SIZE_WAIT {
             self.shown = Some(windowed);
             self.held = None;
             return windowed;
@@ -2208,16 +2237,19 @@ mod tests {
         let later = now + Duration::from_secs(5);
         let (small, big) = (vec2(1100.0, 720.0), vec2(1920.0, 1080.0));
         let mut frame = WindowFrame::default();
-        assert!(frame.step(true, small, now));
-        assert!(frame.step(false, small, now), "fullscreen on the old size");
+        assert!(frame.step(true, small, None, now));
+        assert!(
+            frame.step(false, small, None, now),
+            "fullscreen on the old size"
+        );
         assert!(frame.holding());
-        assert!(!frame.step(false, big, now));
+        assert!(!frame.step(false, big, None, now));
         assert!(!frame.holding());
         assert!(
-            !frame.step(true, big, later),
+            !frame.step(true, big, None, later),
             "in the window on the old size"
         );
-        assert!(frame.step(true, small, later));
+        assert!(frame.step(true, small, None, later));
     }
 
     /// Wayland brings the state and the size in the same frame, which leaves nothing to wait for.
@@ -2227,10 +2259,10 @@ mod tests {
         let later = now + Duration::from_secs(5);
         let (small, big) = (vec2(1100.0, 720.0), vec2(1920.0, 1080.0));
         let mut frame = WindowFrame::default();
-        assert!(frame.step(true, small, now));
-        assert!(!frame.step(false, big, now));
+        assert!(frame.step(true, small, None, now));
+        assert!(!frame.step(false, big, None, now));
         assert!(!frame.holding());
-        assert!(frame.step(true, small, later));
+        assert!(frame.step(true, small, None, later));
         assert!(!frame.holding());
     }
 
@@ -2241,15 +2273,15 @@ mod tests {
         let soon = now + Duration::from_millis(30);
         let (small, big) = (vec2(1100.0, 720.0), vec2(1920.0, 1080.0));
         let mut frame = WindowFrame::default();
-        assert!(frame.step(true, small, now));
-        assert!(frame.step(true, big, now));
-        assert!(!frame.step(false, big, soon));
+        assert!(frame.step(true, small, None, now));
+        assert!(frame.step(true, big, None, now));
+        assert!(!frame.step(false, big, None, soon));
 
         let mut frame = WindowFrame::default();
-        assert!(frame.step(true, small, now));
-        assert!(frame.step(true, big, now));
+        assert!(frame.step(true, small, None, now));
+        assert!(frame.step(true, big, None, now));
         let long_after = now + Duration::from_secs(5);
-        assert!(frame.step(false, big, long_after), "an old resize");
+        assert!(frame.step(false, big, None, long_after), "an old resize");
         assert!(frame.holding());
     }
 
@@ -2259,10 +2291,40 @@ mod tests {
         let now = Instant::now();
         let size = vec2(1920.0, 1080.0);
         let mut frame = WindowFrame::default();
-        assert!(frame.step(true, size, now));
-        assert!(frame.step(false, size, now));
-        assert!(!frame.step(false, size, now + WINDOW_SIZE_WAIT));
+        assert!(frame.step(true, size, None, now));
+        assert!(frame.step(false, size, None, now));
+        assert!(!frame.step(false, size, None, now + WINDOW_SIZE_WAIT));
         assert!(!frame.holding());
+    }
+
+    /// A window already the size of the screen gets no new size going fullscreen, and goes
+    /// straight to the fullscreen layout rather than waiting for one.
+    #[test]
+    fn a_window_the_size_of_the_screen_goes_fullscreen_at_once() {
+        let now = Instant::now();
+        let screen = vec2(1920.0, 1080.0);
+        let mut frame = WindowFrame::default();
+        assert!(frame.step(true, screen, Some(screen), now));
+        assert!(!frame.step(false, screen, Some(screen), now));
+        assert!(!frame.holding());
+        // And back out to the same size, at once too.
+        assert!(frame.step(true, screen, Some(screen), now));
+        assert!(!frame.holding());
+    }
+
+    /// A smaller window still waits for its new size, and comes back out once it has it.
+    #[test]
+    fn a_smaller_window_still_waits_for_its_size() {
+        let now = Instant::now();
+        let (small, screen) = (vec2(1100.0, 720.0), vec2(1920.0, 1080.0));
+        let mut frame = WindowFrame::default();
+        assert!(frame.step(true, small, Some(screen), now));
+        assert!(frame.step(false, small, Some(screen), now));
+        assert!(frame.holding());
+        let later = now + Duration::from_secs(1);
+        assert!(!frame.step(false, screen, Some(screen), later));
+        assert!(!frame.step(true, screen, Some(screen), later + Duration::from_secs(1)));
+        assert!(frame.holding(), "out of fullscreen on the screen's size");
     }
 
     /// A drawer heading with the cover stacks cover, name and list top to bottom inside it, the
