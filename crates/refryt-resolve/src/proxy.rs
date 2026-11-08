@@ -14,10 +14,15 @@
 //!   starts from memory.
 //! - **Expiry without a gap.** A 403/410 from the host (the URL expired, typically after ~6 h
 //!   paused) re-resolves the video and retries the same range; mpv never sees it.
+//! - **Keeping songs.** With [`StreamProxy::record_to`] set, every byte handed to mpv is also
+//!   written to a file at its place. Once a file holds the whole stream it is finished and
+//!   reported, so a song can play again with no connection and no second download.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
+use std::io::{Seek, SeekFrom, Write};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -42,12 +47,125 @@ const MAX_ENTRIES: usize = 6;
 pub type Refresh =
     Arc<dyn Fn(VideoId) -> Pin<Box<dyn Future<Output = Result<AudioStream>> + Send>> + Send + Sync>;
 
+/// Told about each finished file: the video, where it is and its size.
+pub type Recorded = Arc<dyn Fn(VideoId, PathBuf, u64) + Send + Sync>;
+
+/// Where finished files go, and who hears about them.
+struct Recording {
+    dir: PathBuf,
+    done: Recorded,
+}
+
 struct Entry {
     id: VideoId,
     url: Mutex<Url>,
     length: u64,
     mime: String,
     head: Mutex<Option<Arc<Vec<u8>>>>,
+    record: Mutex<Option<Recorder>>,
+}
+
+impl Entry {
+    /// Keep `bytes`, which start at `offset`, if this stream is being kept.
+    fn keep(&self, offset: u64, bytes: &[u8]) {
+        let mut slot = self.record.lock().unwrap();
+        let Some(recorder) = slot.as_mut() else {
+            return;
+        };
+        match recorder.write(offset, bytes, self.length) {
+            Ok(false) => {}
+            Ok(true) => {
+                if let Some(recorder) = slot.take() {
+                    recorder.finish(&self.id, self.length);
+                }
+            }
+            Err(e) => {
+                tracing::debug!(id = %self.id, error = %format!("{e:#}"), "stream proxy: stopped keeping a song");
+                *slot = None;
+            }
+        }
+    }
+}
+
+/// A file being filled in as a stream is read, in whatever order its parts arrive.
+struct Recorder {
+    file: std::fs::File,
+    partial: PathBuf,
+    finished: PathBuf,
+    recording: Arc<Recording>,
+    /// The spans written so far, as sorted, merged `start..end` pairs.
+    covered: Vec<(u64, u64)>,
+}
+
+impl Recorder {
+    fn start(recording: &Arc<Recording>, id: &VideoId, mime: &str) -> std::io::Result<Self> {
+        let extension = match mime.split(';').next().unwrap_or_default().trim() {
+            "audio/webm" => "webm",
+            "audio/mp4" => "m4a",
+            _ => "audio",
+        };
+        let partial = recording.dir.join(format!(".{id}.part"));
+        Ok(Self {
+            file: std::fs::File::create(&partial)?,
+            partial,
+            finished: recording.dir.join(format!("{id}.{extension}")),
+            recording: Arc::clone(recording),
+            covered: Vec::new(),
+        })
+    }
+
+    /// Write `bytes` at `offset`. True once the file holds all `length` bytes.
+    fn write(&mut self, offset: u64, bytes: &[u8], length: u64) -> std::io::Result<bool> {
+        if bytes.is_empty() {
+            return Ok(false);
+        }
+        self.file.seek(SeekFrom::Start(offset))?;
+        self.file.write_all(bytes)?;
+        cover(&mut self.covered, offset, offset + bytes.len() as u64);
+        Ok(self.covered == [(0, length)])
+    }
+
+    fn finish(mut self, id: &VideoId, length: u64) {
+        let finished = std::mem::take(&mut self.finished);
+        let renamed = self
+            .file
+            .flush()
+            .and_then(|()| std::fs::rename(&self.partial, &finished));
+        match renamed {
+            Ok(()) => {
+                self.partial = PathBuf::new();
+                (self.recording.done)(id.clone(), finished, length);
+            }
+            Err(e) => {
+                tracing::debug!(%id, error = %e, "stream proxy: could not finish a kept song");
+            }
+        }
+    }
+}
+
+impl Drop for Recorder {
+    /// A stream let go of before it was all read leaves nothing behind.
+    fn drop(&mut self) {
+        if !self.partial.as_os_str().is_empty() {
+            let _ = std::fs::remove_file(&self.partial);
+        }
+    }
+}
+
+/// Add `start..end` to sorted, merged spans.
+fn cover(spans: &mut Vec<(u64, u64)>, start: u64, end: u64) {
+    let (mut start, mut end) = (start, end);
+    spans.retain(|&(s, e)| {
+        if s <= end && start <= e {
+            start = start.min(s);
+            end = end.max(e);
+            false
+        } else {
+            true
+        }
+    });
+    let at = spans.partition_point(|&(s, _)| s < start);
+    spans.insert(at, (start, end));
 }
 
 pub struct StreamProxy {
@@ -58,6 +176,7 @@ pub struct StreamProxy {
     refresh: Refresh,
     entries: Mutex<HashMap<String, Arc<Entry>>>,
     order: Mutex<VecDeque<String>>,
+    recording: Mutex<Option<Arc<Recording>>>,
 }
 
 impl StreamProxy {
@@ -78,6 +197,7 @@ impl StreamProxy {
             refresh,
             entries: Mutex::new(HashMap::new()),
             order: Mutex::new(VecDeque::new()),
+            recording: Mutex::new(None),
         });
         let serving = Arc::clone(&proxy);
         runtime.spawn(async move {
@@ -103,6 +223,19 @@ impl StreamProxy {
         Ok(proxy)
     }
 
+    /// Keep each stream read from now on in `dir`, telling `done` as each file is finished. `None`
+    /// stops, and drops what is half kept.
+    pub fn record_to(&self, to: Option<(PathBuf, Recorded)>) {
+        let recording = to.map(|(dir, done)| Arc::new(Recording { dir, done }));
+        *self.recording.lock().unwrap() = recording.clone();
+        for entry in self.entries.lock().unwrap().values() {
+            let mut slot = entry.record.lock().unwrap();
+            *slot = recording
+                .as_ref()
+                .and_then(|r| Recorder::start(r, &entry.id, &entry.mime).ok());
+        }
+    }
+
     /// Register `stream` for `id` and return the URL mpv should load. Re-registering a video
     /// keeps its prefetched head when the stream is the same length (the same file, re-resolved).
     pub fn url_for(&self, id: &VideoId, stream: &AudioStream) -> Result<Url> {
@@ -114,19 +247,34 @@ impl StreamProxy {
         match entries.get(&key) {
             Some(entry) if entry.length == length => {
                 *entry.url.lock().unwrap() = stream.url.clone();
+                // Played again: keep it this time, if it wasn't kept the first time.
+                let mut slot = entry.record.lock().unwrap();
+                if slot.is_none()
+                    && let Some(recording) = self.recording.lock().unwrap().as_ref()
+                {
+                    *slot = Recorder::start(recording, id, &entry.mime).ok();
+                }
             }
             _ => {
+                let mime = stream
+                    .mime
+                    .clone()
+                    .unwrap_or_else(|| "application/octet-stream".to_owned());
+                let record = self
+                    .recording
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|r| Recorder::start(r, id, &mime).ok());
                 entries.insert(
                     key.clone(),
                     Arc::new(Entry {
                         id: id.clone(),
                         url: Mutex::new(stream.url.clone()),
                         length,
-                        mime: stream
-                            .mime
-                            .clone()
-                            .unwrap_or_else(|| "application/octet-stream".to_owned()),
+                        mime,
                         head: Mutex::new(None),
+                        record: Mutex::new(record),
                     }),
                 );
             }
@@ -217,9 +365,9 @@ impl StreamProxy {
             && pos < head.len() as u64
         {
             let until = (end + 1).min(head.len() as u64);
-            socket
-                .write_all(&head[pos as usize..until as usize])
-                .await?;
+            let part = &head[pos as usize..until as usize];
+            entry.keep(pos, part);
+            socket.write_all(part).await?;
             pos = until;
         }
         if pos > end {
@@ -231,6 +379,7 @@ impl StreamProxy {
             if bytes.is_empty() {
                 bail!("the stream host sent an empty range at {pos}");
             }
+            entry.keep(pos, &bytes);
             pos += bytes.len() as u64;
             if pos <= end {
                 next = Some(self.spawn_fetch(entry, pos, (pos + RANGE - 1).min(end)));
@@ -586,6 +735,158 @@ mod tests {
         let paths = paths.lock().unwrap();
         assert_eq!(paths[0], "/stale");
         assert!(paths[1..].iter().all(|p| p == "/fresh"), "{paths:?}");
+    }
+
+    fn spans(list: &[(u64, u64)]) -> Vec<(u64, u64)> {
+        let mut spans = Vec::new();
+        for &(s, e) in list {
+            cover(&mut spans, s, e);
+        }
+        spans
+    }
+
+    #[test]
+    fn covered_spans_merge_in_any_order() {
+        assert_eq!(spans(&[(0, 10), (10, 20)]), [(0, 20)]);
+        assert_eq!(spans(&[(10, 20), (0, 10)]), [(0, 20)]);
+        assert_eq!(spans(&[(0, 5), (15, 20), (5, 15)]), [(0, 20)]);
+        assert_eq!(spans(&[(0, 5), (15, 20)]), [(0, 5), (15, 20)]);
+        assert_eq!(spans(&[(0, 20), (5, 10)]), [(0, 20)]);
+    }
+
+    type Kept = Arc<Mutex<Vec<(String, PathBuf, u64)>>>;
+
+    fn keeping(dir: &std::path::Path) -> (Kept, Option<(PathBuf, Recorded)>) {
+        let kept: Kept = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&kept);
+        let done: Recorded = Arc::new(move |id, path, len| {
+            seen.lock()
+                .unwrap()
+                .push((id.as_str().to_owned(), path, len));
+        });
+        (kept, Some((dir.to_owned(), done)))
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("refryt-proxy-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A stream read to the end is left as a whole file, which is reported once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stream_read_to_the_end_is_kept() {
+        let dir = scratch("whole");
+        let body = data(2_500_000);
+        let (base, count, _) = fake_host(Arc::clone(&body), 0).await;
+        let proxy = StreamProxy::start(
+            &tokio::runtime::Handle::current(),
+            reqwest::Client::new(),
+            no_refresh(),
+        )
+        .unwrap();
+        let (kept, to) = keeping(&dir);
+        proxy.record_to(to);
+        let url = proxy
+            .url_for(&id(), &stream(&format!("{base}/a"), body.len()))
+            .unwrap();
+        let fetched = count.load(Ordering::SeqCst);
+
+        let (_, bytes) = get(&url, None).await;
+        assert_eq!(bytes, *body);
+        let kept = kept.lock().unwrap().clone();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].0, "dQw4w9WgXcQ");
+        assert_eq!(kept[0].2, body.len() as u64);
+        assert_eq!(kept[0].1, dir.join("dQw4w9WgXcQ.webm"));
+        assert_eq!(std::fs::read(&kept[0].1).unwrap(), *body);
+        assert_eq!(
+            count.load(Ordering::SeqCst) - fetched,
+            4,
+            "no extra requests for keeping it"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Read in pieces and out of order, as a seek does, it is still finished once all is there.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stream_read_out_of_order_is_kept_once_complete() {
+        let dir = scratch("pieces");
+        let body = data(1_500_000);
+        let (base, _, _) = fake_host(Arc::clone(&body), 0).await;
+        let proxy = StreamProxy::start(
+            &tokio::runtime::Handle::current(),
+            reqwest::Client::new(),
+            no_refresh(),
+        )
+        .unwrap();
+        let (kept, to) = keeping(&dir);
+        proxy.record_to(to);
+        let url = proxy
+            .url_for(&id(), &stream(&format!("{base}/a"), body.len()))
+            .unwrap();
+
+        get(&url, Some("bytes=1000000-")).await;
+        assert!(kept.lock().unwrap().is_empty(), "only the end so far");
+        get(&url, Some("bytes=0-999999")).await;
+        let kept = kept.lock().unwrap().clone();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read(&kept[0].1).unwrap(), *body);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Part of a stream, then stopping, leaves no file behind.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stream_left_part_read_leaves_nothing() {
+        let dir = scratch("part");
+        let body = data(1_500_000);
+        let (base, _, _) = fake_host(Arc::clone(&body), 0).await;
+        let proxy = StreamProxy::start(
+            &tokio::runtime::Handle::current(),
+            reqwest::Client::new(),
+            no_refresh(),
+        )
+        .unwrap();
+        let (kept, to) = keeping(&dir);
+        proxy.record_to(to);
+        let url = proxy
+            .url_for(&id(), &stream(&format!("{base}/a"), body.len()))
+            .unwrap();
+
+        get(&url, Some("bytes=0-99999")).await;
+        assert!(kept.lock().unwrap().is_empty());
+        proxy.record_to(None);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "partial removed"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Off, nothing is written.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nothing_is_kept_unless_asked() {
+        let body = data(300_000);
+        let (base, _, _) = fake_host(Arc::clone(&body), 0).await;
+        let proxy = StreamProxy::start(
+            &tokio::runtime::Handle::current(),
+            reqwest::Client::new(),
+            no_refresh(),
+        )
+        .unwrap();
+        let url = proxy
+            .url_for(&id(), &stream(&format!("{base}/a"), body.len()))
+            .unwrap();
+        get(&url, None).await;
+        assert!(
+            proxy.entries.lock().unwrap()["dQw4w9WgXcQ"]
+                .record
+                .lock()
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

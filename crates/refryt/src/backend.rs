@@ -969,6 +969,8 @@ pub struct Backend {
     /// Video id → downloaded file. `App` owns `downloads.json` and pushes the map here; the
     /// backend only reads it, to play a downloaded track from disk instead of resolving.
     downloads: Arc<std::sync::Mutex<std::collections::HashMap<String, std::path::PathBuf>>>,
+    /// Songs kept on disk as they stream, when caching is on.
+    song_cache: Arc<crate::song_cache::SongCache>,
 }
 
 impl Drop for Backend {
@@ -1041,7 +1043,43 @@ impl Backend {
             ctx,
             scrobble_generation: Arc::new(AtomicU64::new(0)),
             downloads: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            song_cache: Arc::new(crate::song_cache::SongCache::new()),
         })
+    }
+
+    /// At startup: pick up a cache kept from last time, or empty the folder.
+    pub fn open_song_cache(&self, keep: bool) {
+        self.song_cache.open(keep);
+    }
+
+    /// Cache songs as they stream, up to `limit` bytes; off stops and deletes what was cached.
+    pub fn set_song_cache(&self, on: bool, limit: u64) {
+        let Some(proxy) = &self.proxy else { return };
+        self.song_cache.set_limit(limit);
+        if !on {
+            proxy.record_to(None);
+            self.song_cache.clear();
+            return;
+        }
+        let Some(dir) = self.song_cache.folder() else {
+            return;
+        };
+        let cache = Arc::clone(&self.song_cache);
+        let done: refryt_resolve::Recorded = Arc::new(move |id, path, bytes| {
+            debug!(%id, bytes, "cached a song");
+            cache.add(id.as_str(), &path, bytes);
+        });
+        proxy.record_to(Some((dir, done)));
+    }
+
+    /// A new size for the song cache, trimming it to fit. Recording carries on untouched.
+    pub fn set_song_cache_limit(&self, limit: u64) {
+        self.song_cache.set_limit(limit);
+    }
+
+    /// The app is closing: save the cache for next time, or delete it.
+    pub fn close_song_cache(&self, keep: bool) {
+        self.song_cache.close(keep);
     }
 
     /// Replace the backend's view of what is downloaded, after the index loads or changes.
@@ -2423,6 +2461,7 @@ impl Backend {
         start_at: Option<f64>,
     ) -> u64 {
         let downloads = Arc::clone(&self.downloads);
+        let song_cache = Arc::clone(&self.song_cache);
         let (resolver, api, tx, ctx) = (
             Arc::clone(&self.resolver),
             Arc::clone(&self.api),
@@ -2462,6 +2501,31 @@ impl Backend {
                     &path.to_string_lossy(),
                     volume,
                     None,
+                    normalise,
+                    start_at,
+                ) {
+                    Ok(()) => Event::Playing(track, generation),
+                    Err(e) => Event::PlaybackFailed {
+                        track,
+                        error: format!("{e:#}"),
+                        generation,
+                    },
+                };
+                if let Event::Playing(ref track, _) = event {
+                    scrobble.maybe_start(track.clone(), Arc::clone(&mpv), generation);
+                }
+                Self::emit(&tx, &ctx, event);
+                return;
+            }
+            // A cached song plays from disk too, with no connection needed. It was a real YouTube
+            // stream, so it is reported like a download.
+            if let Some((path, loudness)) = song_cache.get(&track.video_id) {
+                debug!(video_id = %track.video_id, "playing a cached song");
+                let event = match player::load(
+                    &mpv,
+                    &path.to_string_lossy(),
+                    volume,
+                    loudness,
                     normalise,
                     start_at,
                 ) {
@@ -2530,8 +2594,10 @@ impl Backend {
                 }
             };
 
+            song_cache.note_alias(&track.video_id, id.as_str());
             let event = match resolver.resolve(&id).await {
                 Ok(stream) => {
+                    song_cache.note_loudness(id.as_str(), stream.loudness_db);
                     let url = playable_url(proxy.as_deref(), &id, &stream);
                     match player::load(
                         &mpv,

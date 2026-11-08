@@ -3384,9 +3384,11 @@ fn offline_page(
         );
         ui.add_space(8.0);
         ui.label(
-            egui::RichText::new(
-                "This page loads by itself once you're back online. Your downloads play without one.",
-            )
+            egui::RichText::new(if app.settings.cache_songs {
+                "This page loads by itself once you're back online. Your downloads and cached songs play without one."
+            } else {
+                "This page loads by itself once you're back online. Your downloads play without one."
+            })
             .font(theme::regular(13.0))
             .color(p.secondary),
         );

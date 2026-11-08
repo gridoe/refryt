@@ -54,6 +54,7 @@ pub mod player;
 pub mod queue;
 pub mod search_history;
 pub mod settings;
+pub mod song_cache;
 pub mod stats;
 pub mod takeout;
 pub mod theme;
