@@ -94,7 +94,7 @@ Update it with `flatpak update`. The browser import and Launch on startup are no
 
 **AppImage:** download `refryt-<version>-x86_64.AppImage`, make it executable with `chmod +x` and run it.
 
-**AUR:** `refryt-bin`, an unofficial package of the AppImage, for example `yay -S refryt-bin`.
+**AUR:** `refryt-bin` (the AppImage) or `refryt-git` (latest git, built from source), both unofficial, for example `yay -S refryt-bin`.
 
 ### Windows
 
