@@ -2614,10 +2614,26 @@ impl Backend {
     /// we actually request. Decoding and the dominant-colour pass both happen here, off the UI
     /// thread — only the texture upload has to happen on it.
     pub fn fetch_image(&self, key: Arc<str>, url: String, px: u32, wide: bool) {
+        self.fetch_decoded(key, url, px, wide, move |bytes| images::decode(bytes, px));
+    }
+
+    /// [`Self::fetch_image`] for the now-playing view's blurred backdrop.
+    pub fn fetch_backdrop(&self, key: Arc<str>, url: String, px: u32, wide: bool) {
+        self.fetch_decoded(key, url, px, wide, images::decode_backdrop);
+    }
+
+    fn fetch_decoded(
+        &self,
+        key: Arc<str>,
+        url: String,
+        px: u32,
+        wide: bool,
+        decode: impl FnOnce(&[u8]) -> anyhow::Result<(egui::ColorImage, [u8; 3])> + Send + 'static,
+    ) {
         let (tx, ctx, http) = (self.tx.clone(), self.ctx.clone(), self.http.clone());
         self.rt.spawn(async move {
             let event = match fetch_bytes(&http, &url).await {
-                Ok(bytes) => match images::decode(&bytes, px) {
+                Ok(bytes) => match decode(&bytes) {
                     Ok((image, dominant)) => Event::ImageReady(Box::new(images::Loaded {
                         url: key,
                         px,

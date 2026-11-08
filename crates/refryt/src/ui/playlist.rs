@@ -36,14 +36,13 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
 
-    let wash = crate::ui::header_wash_colour(
-        app,
-        app.playlist.as_ref().and_then(|pl| pl.thumbnail.as_ref()),
-    );
+    let art = app.playlist.as_ref().and_then(|pl| pl.thumbnail.clone());
+    let tint = crate::ui::header_tint(app, &ui.ctx().clone(), art.as_ref());
     crate::ui::page_scroll(app, "playlist").show(ui, |ui| {
         // The tint travels with the page: painted in scroll coordinates, it scrolls away
         // with the header instead of lingering as a background.
-        crate::ui::header_wash(ui, &app.palette, app.content_rect, ui.cursor().min.y, wash);
+        let top = ui.cursor().min.y;
+        crate::ui::header_wash(ui, &app.palette, app.content_rect, top, &tint);
         header(app, ui);
         crate::ui::info_popup(app, ui);
         // Breathing room between the header and the first row.

@@ -471,8 +471,8 @@ fn appearance(app: &mut App, ui: &mut egui::Ui) {
             ui,
             &p,
             "setting-adaptive-art-color",
-            "Adaptive header colour",
-            "Tints album and playlist headers to match the cover.",
+            "Adaptive colour",
+            "Tints album and playlist headers and now-playing to match the cover.",
             &mut adaptive_art_color,
         );
     });
