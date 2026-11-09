@@ -148,6 +148,8 @@ fn about(app: &mut App, ui: &mut egui::Ui) {
         app.update.open = true;
     }
 
+    crate::ui::whats_new::about_group(app, ui);
+
     if app.logo.is_none() {
         app.logo = crate::logo_texture(ui.ctx());
     }

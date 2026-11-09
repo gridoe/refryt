@@ -1,3 +1,6 @@
+//! Builds in the release notes from `release-notes/`, newest first, for What's new in Settings →
+//! About (`src/changelog.rs`). A tree without the folder builds with none.
+//!
 //! Embeds `refryt.ico` as the .exe's own icon resource, and the version stamp Windows shows under
 //! Properties → Details — Windows only, and specifically the *target* platform, not the host
 //! running this build script: cross-compiling for Windows from Linux still needs this to run, so
@@ -10,6 +13,7 @@
 //! `OUT_DIR`, with the icon path made absolute so it still resolves from there.
 
 fn main() {
+    changelog();
     println!("cargo::rerun-if-changed=refryt.rc");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -32,4 +36,34 @@ fn main() {
     embed_resource::compile(&out, embed_resource::NONE)
         .manifest_optional()
         .unwrap();
+}
+
+/// Every `release-notes/<version>.md`, newest first, as `NOTES` in `OUT_DIR/changelog.rs`.
+fn changelog() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let dir = std::path::Path::new(&manifest_dir).join("../../release-notes");
+    println!("cargo::rerun-if-changed={}", dir.display());
+    let mut notes: Vec<(Vec<u64>, String, std::path::PathBuf)> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let version = path.file_name()?.to_str()?.strip_suffix(".md")?.to_owned();
+            let parts = version
+                .split('.')
+                .map(|n| n.parse().ok())
+                .collect::<Option<Vec<u64>>>()?;
+            Some((parts, version, path.canonicalize().ok()?))
+        })
+        .collect();
+    notes.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut out = String::from("pub(crate) const NOTES: &[(&str, &str)] = &[\n");
+    for (_, version, path) in &notes {
+        let path = path.to_str().unwrap();
+        out.push_str(&format!("    ({version:?}, include_str!({path:?})),\n"));
+    }
+    out.push_str("];\n");
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    std::fs::write(std::path::Path::new(&out_dir).join("changelog.rs"), out).unwrap();
 }

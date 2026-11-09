@@ -19,6 +19,7 @@ pub mod autostart;
 pub mod backend;
 pub mod blur;
 pub mod browser_cookies;
+pub mod changelog;
 pub mod chrome;
 pub mod crash;
 pub mod discord;
