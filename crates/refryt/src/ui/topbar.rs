@@ -74,9 +74,11 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
     } else {
         0.0
     };
+    // With listening stats turned off there is no Stats page to go to, so no button either.
+    let stats_on = app.settings.listening_stats;
     let stats_fits = right.available_width() - 2.0
         >= 2.0 * (TOP_ICON_W + spacing) + RIGHT_GAP + MIN_SEARCH_W + LEFT_W + left;
-    account_menu(app, &mut right, &chip, signed_in, !stats_fits);
+    account_menu(app, &mut right, &chip, signed_in, stats_on && !stats_fits);
     right.add_space(2.0);
     // Listening history beside the chip, as a clock — it is a page, not a setting.
     // Settings itself lives only under the chip, which carries it in every state. One door,
@@ -87,7 +89,8 @@ pub fn top_bar(app: &mut App, ui: &mut egui::Ui) {
     {
         app.navigate(Route::History);
     }
-    if stats_fits
+    if stats_on
+        && stats_fits
         && widgets::icon_button(&mut right, &p, Icon::ChartColumn, TOP_ICON_PT, false)
             .hint(crate::ui::tips::STATS)
             .clicked()
