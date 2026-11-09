@@ -338,6 +338,11 @@ pub struct Settings {
     pub listening_stats: bool,
     /// The offer to import a Takeout export has had its answer, and isn't made again.
     pub takeout_offer_answered: bool,
+    /// The version whose What's new was last shown. A new install starts at its own version, so
+    /// it isn't told what changed; a settings file from before this existed reads as `None`, so
+    /// an update to the version that brought it says what changed, like any later one.
+    #[serde(default)]
+    pub seen_version: Option<String>,
     /// What the resolver asks for.
     pub quality: Quality,
     /// Keep playing related songs when a hand-picked queue nears its end. YouTube's own radio,
@@ -442,6 +447,7 @@ impl Default for Settings {
             scroll_fades: false,
             adaptive_art_color: true,
             listening_stats: true,
+            seen_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             takeout_offer_answered: false,
             quality: Quality::default(),
             autoplay: true,

@@ -29,6 +29,7 @@ pub mod topbar;
 pub mod update;
 pub mod upnext;
 pub mod video;
+pub mod whats_new;
 
 use std::sync::Arc;
 

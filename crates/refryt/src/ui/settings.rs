@@ -152,6 +152,8 @@ fn about(app: &mut App, ui: &mut egui::Ui) {
         app.logo = crate::logo_texture(ui.ctx());
     }
     let logo = app.logo.clone();
+    let (mut github, mut changes) = (false, false);
+    let has_changes = crate::changelog::this_version().is_some();
     widgets::setting_group(ui, &p, Some("About"), |ui, g| {
         // An open-source app's own about-ish footer: icon, name, version, licence.
         g.free(ui, |ui| {
@@ -173,9 +175,25 @@ fn about(app: &mut App, ui: &mut egui::Ui) {
                             .color(p.dim),
                     );
                 });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    github = widgets::icon_button(ui, &p, Icon::Github, 18.0, false)
+                        .hint("refryt on GitHub")
+                        .clicked();
+                    if has_changes {
+                        changes = widgets::icon_button(ui, &p, Icon::CircleHelp, 18.0, false)
+                            .hint("What's new in this version")
+                            .clicked();
+                    }
+                });
             });
         });
     });
+    if github {
+        crate::open_url(crate::WEBSITE);
+    }
+    if changes {
+        app.whats_new_open = true;
+    }
 }
 
 /// Why the last sign-in attempt failed, shown wherever the user is.

@@ -1856,6 +1856,8 @@ pub struct App {
     /// The keyboard-shortcut cheatsheet is open. Opened by `?`/F1 and the account menu, closed by
     /// the modal itself.
     pub(crate) help_open: bool,
+    /// What's new is showing, once after an update.
+    pub(crate) whats_new_open: bool,
     /// The open tab of the Settings page. Kept for the session, not saved.
     pub(crate) settings_tab: ui::settings::SettingsTab,
     /// The "Order of homepage" window is open.
@@ -2043,6 +2045,8 @@ impl App {
             tracing::warn!(%file, %error, "custom theme did not load");
         }
         settings.migrate_legacy(&custom_themes);
+        let whats_new_open = crate::changelog::show_after_update(settings.seen_version.as_deref())
+            && crate::changelog::this_version().is_some();
         // Session-only, and applied before the first palette build so the very first frame
         // already shows what was asked for. Never saved: `update_settings` only ever writes
         // `self.settings`, and this happens before that struct is stored on `App`, so a later
@@ -2309,6 +2313,7 @@ impl App {
             lyrics_active: None,
             page_info: None,
             help_open: false,
+            whats_new_open,
             settings_tab: ui::settings::SettingsTab::default(),
             home_order_open: false,
             paste_cookies_open: false,
@@ -8729,6 +8734,7 @@ impl eframe::App for App {
         ui::paste_cookies::modal(self, ui);
         ui::crash::modal(self, ui);
         ui::update::modal(self, ui);
+        ui::whats_new::modal(self, ui);
 
         if !self.decorated && !maximized {
             chrome::resize_handles(ui);

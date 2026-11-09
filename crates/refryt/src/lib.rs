@@ -19,6 +19,7 @@ pub mod autostart;
 pub mod backend;
 pub mod blur;
 pub mod browser_cookies;
+pub mod changelog;
 pub mod chrome;
 pub mod crash;
 pub mod discord;
@@ -42,6 +43,9 @@ pub mod local;
 pub mod local_playlists;
 pub mod media;
 pub mod memory;
+/// The project's home on GitHub.
+pub const WEBSITE: &str = "https://github.com/gridoe/refryt";
+
 /// macOS: the app's menus in the menu bar; see the module's own doc comment.
 #[cfg(target_os = "macos")]
 pub mod menu_bar;
