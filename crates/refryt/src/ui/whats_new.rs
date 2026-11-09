@@ -1,12 +1,11 @@
-//! What's new: the changes in each release, as a group in Settings → About, and as a window
-//! once after an update. The notes come from `crate::changelog`.
+//! What's new: this version's changes in a window, shown once after an update and from the
+//! "?" beside the version in Settings → About. The notes come from `crate::changelog`.
 
 use egui::text::LayoutJob;
 use egui::{Color32, FontId, TextFormat};
 
 use crate::app::App;
 use crate::changelog::{self, Change, Style};
-use crate::icons::Icon;
 use crate::theme::{self, Palette};
 use crate::widgets;
 
@@ -51,91 +50,8 @@ fn change_list(ui: &mut egui::Ui, p: &Palette, changes: &[Change]) {
     }
 }
 
-/// The What's new group in Settings → About: every release with notes, newest first. This
-/// version is open; each earlier one opens from its heading.
-pub(crate) fn about_group(app: &mut App, ui: &mut egui::Ui) {
-    let releases = changelog::releases();
-    if releases.is_empty() {
-        return;
-    }
-    let p = app.palette;
-    widgets::setting_group(ui, &p, Some("What's new"), |ui, g| {
-        g.free(ui, |ui| {
-            for (i, release) in releases.iter().enumerate() {
-                if i > 0 {
-                    ui.add_space(6.0);
-                }
-                let id = ui.id().with(("whats-new", release.version));
-                let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(i == 0);
-                if heading(ui, &p, release.version, i == 0, open).clicked() {
-                    open = !open;
-                    ui.data_mut(|d| d.insert_temp(id, open));
-                }
-                if open {
-                    ui.add_space(8.0);
-                    change_list(ui, &p, &release.changes);
-                    ui.add_space(6.0);
-                }
-            }
-        });
-    });
-}
-
-/// A release's heading: its version, "This version" beside the newest, and a chevron that turns
-/// when the release is open. The whole line is the button.
-fn heading(
-    ui: &mut egui::Ui,
-    p: &Palette,
-    version: &str,
-    current: bool,
-    open: bool,
-) -> egui::Response {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::click());
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        ui.painter().rect_filled(
-            rect.expand2(egui::vec2(6.0, 0.0)),
-            egui::CornerRadius::same(6),
-            p.glass(p.surface_hover),
-        );
-    }
-    let chevron = egui::Rect::from_center_size(
-        egui::pos2(rect.left() + 8.0, rect.center().y),
-        egui::Vec2::splat(14.0),
-    );
-    Icon::ChevronRight
-        .image(p.secondary, 14.0)
-        .rotate(
-            if open {
-                std::f32::consts::FRAC_PI_2
-            } else {
-                0.0
-            },
-            egui::Vec2::splat(0.5),
-        )
-        .paint_at(ui, chevron);
-    let text = ui.painter().text(
-        egui::pos2(rect.left() + 22.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        version,
-        theme::semibold(14.0),
-        p.text,
-    );
-    if current {
-        ui.painter().text(
-            egui::pos2(text.right() + 8.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            "This version",
-            theme::regular(11.5),
-            p.dim,
-        );
-    }
-    response
-}
-
-/// The window shown once after an update: this version's changes, with a way to the earlier
-/// ones in Settings. It also records the version as seen, so it doesn't come back.
+/// The window with this version's changes. It also records the version as seen, so it opens by
+/// itself only once after an update.
 pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
     let current = env!("CARGO_PKG_VERSION");
     if app.settings.seen_version.as_deref() != Some(current) {
@@ -157,7 +73,7 @@ pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
     let width = 560.0_f32.min(screen.width() - 40.0);
     let height = 520.0_f32.min(screen.height() - 80.0);
 
-    let (mut close, mut earlier) = (false, false);
+    let mut close = false;
     egui::Area::new(egui::Id::new("whats-new-modal"))
         .order(egui::Order::Middle)
         .fixed_pos(screen.min)
@@ -203,7 +119,7 @@ pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
             );
             body.add_space(4.0);
             body.label(
-                egui::RichText::new("refryt was updated. This is what changed.")
+                egui::RichText::new("What changed in this version.")
                     .font(theme::regular(12.0))
                     .color(p.secondary),
             );
@@ -224,17 +140,12 @@ pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
             );
             close |= widgets::chip(&mut row, &p, "Close", true).clicked();
-            earlier = widgets::chip(&mut row, &p, "Earlier versions", false).clicked();
             if row.input(|i| i.key_pressed(egui::Key::Escape)) {
                 close = true;
             }
         });
 
-    if earlier {
-        app.settings_tab = crate::ui::settings::SettingsTab::About;
-        app.navigate(crate::app::Route::Settings);
-    }
-    if close || earlier {
+    if close {
         app.whats_new_open = false;
     }
 }

@@ -22,7 +22,7 @@ use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
 use tray_icon::menu::{AboutMetadata, CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 /// Where Help sends a reader who wants to know more.
-pub const WEBSITE: &str = "https://github.com/gridoe/refryt";
+pub const WEBSITE: &str = crate::WEBSITE;
 
 /// What choosing one of the app's menu items asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

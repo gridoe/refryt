@@ -33,6 +33,7 @@ icons! {
     Download => "download",
     Ellipsis => "ellipsis",
     Folder => "folder",
+    Github => "github",
     Heart => "heart",
     HeartFilled => "heart-filled",
     History => "history",
