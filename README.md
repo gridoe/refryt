@@ -35,6 +35,10 @@ refryt is a desktop client for YouTube Music, written in Rust. It doesn't embed 
     <td width="50%"><a href="assets/screenshots/home-catppuccin-frappe-blur.webp"><img src="assets/screenshots/home-catppuccin-frappe-blur.webp" alt="Home with the queue and synced lyrics open, in Catppuccin Frappé, transparent with background blur"></a><br><sub>Home with the queue and lyrics, Catppuccin Frappé, transparent with blur*</sub></td>
     <td width="50%"><a href="assets/screenshots/home-catppuccin-latte-blur.webp"><img src="assets/screenshots/home-catppuccin-latte-blur.webp" alt="Home with the queue open, in Catppuccin Latte, transparent with background blur"></a><br><sub>Home and the queue, Catppuccin Latte, transparent with blur*</sub></td>
   </tr>
+  <tr>
+    <td width="50%"><a href="assets/screenshots/now-playing.webp"><img src="assets/screenshots/now-playing.webp" alt="Now playing in the classic dark theme: the cover, Next up and synced lyrics over a background in the cover's colour"></a><br><sub>Now playing with the queue and lyrics, Classic Dark</sub></td>
+    <td width="50%"><a href="assets/screenshots/now-playing-catppuccin-latte.webp"><img src="assets/screenshots/now-playing-catppuccin-latte.webp" alt="Now playing in Catppuccin Latte, with the queue and synced lyrics"></a><br><sub>Now playing with the queue and lyrics, Catppuccin Latte</sub></td>
+  </tr>
 </table>
 
 <details>
@@ -66,7 +70,7 @@ refryt is a desktop client for YouTube Music, written in Rust. It doesn't embed 
     <td width="50%"><a href="assets/screenshots/home-solarized-light.webp"><img src="assets/screenshots/home-solarized-light.webp" alt="Home in Solarized Light"></a><br><sub>Home, Solarized Light</sub></td>
   </tr>
   <tr>
-    <td width="50%"><a href="assets/screenshots/fullscreen-lyrics.png"><img src="assets/screenshots/fullscreen-lyrics.png" alt="The fullscreen player with synced lyrics"></a><br><sub>The fullscreen player with synced lyrics</sub></td>
+    <td width="50%"><a href="assets/screenshots/stats-tokyo-night.webp"><img src="assets/screenshots/stats-tokyo-night.webp" alt="The Stats page for the last 4 weeks: plays, listening time, top songs and artists and plays over time, in Tokyo Night"></a><br><sub>Stats, Tokyo Night</sub></td>
     <td width="50%"><a href="assets/screenshots/settings.png"><img src="assets/screenshots/settings.png" alt="Settings, Appearance, in Catppuccin Frappé, transparent with background blur"></a><br><sub>Settings, Catppuccin Frappé, transparent with blur*</sub></td>
   </tr>
   <tr>
@@ -94,7 +98,7 @@ Update it with `flatpak update`. The browser import and Launch on startup are no
 
 **AppImage:** download `refryt-<version>-x86_64.AppImage`, make it executable with `chmod +x` and run it.
 
-**AUR:** `refryt-bin` (the AppImage) or `refryt-git` (latest git, built from source), both unofficial, for example `yay -S refryt-bin`.
+**AUR:** `refryt-bin` (the AppImage) or `refryt-git` (latest git, built from source), both unofficial (maintained by [9M2PJU](https://aur.archlinux.org/account/9M2PJU)), for example `yay -S refryt-bin`.
 
 ### Windows
 
