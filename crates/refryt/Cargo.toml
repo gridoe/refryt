@@ -54,6 +54,10 @@ walkdir = "2.5.0"
 # Local dates for the Stats page. Already in the build through ytmapi-rs.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 discord-rich-presence = "1.1"
+# The cast receiver's discovery socket (`cast/dial.rs`): UDP 1900 has to be opened shared and
+# joined to a multicast group, which `std` and tokio cannot ask for. Already compiled for tokio
+# and hyper, at this version, so it adds an edge rather than a crate.
+socket2 = { version = "0.6", features = ["all"] }
 # Folds the "styled" letters channels write titles in (𝐓𝐢𝐦𝐞𝐥𝐞𝐬𝐬, Unicode's Mathematical
 # Alphanumeric Symbols) back to plain ones, which no bundled font covers. Already compiled for
 # reqwest's IDNA support, at this version, so it adds nothing to the build.

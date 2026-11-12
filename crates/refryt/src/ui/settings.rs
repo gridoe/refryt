@@ -956,7 +956,18 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
     // application (the id is fixed in `crate::discord`), so the toggle is the whole setting.
     let mut discord = app.settings.discord_rich_presence;
     let mut lrclib = app.settings.lrclib_lyrics;
+    let mut cast = app.settings.cast_receiver;
+    let cast_detail = cast_detail(app);
     widgets::setting_group(ui, &p, Some("Integrations"), |ui, g| {
+        toggle_row(
+            g,
+            ui,
+            &p,
+            "setting-cast",
+            "Cast from YouTube Music",
+            &cast_detail,
+            &mut cast,
+        );
         toggle_row(
             g,
             ui,
@@ -986,7 +997,28 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
         s.hide_tray_on_close = hide_tray;
         s.discord_rich_presence = discord;
         s.lrclib_lyrics = lrclib;
+        s.cast_receiver = cast;
     });
+}
+
+/// What the cast receiver's row says under its title: what the switch does while it is off,
+/// and where the receiver stands while it is on, since a device that does not show up in the
+/// phone's menu gives no other sign of why.
+fn cast_detail(app: &App) -> String {
+    use crate::cast::Status;
+    let Some(name) = app.cast_name() else {
+        return "Lists this computer in the Cast menu of YouTube Music on phones on the same \
+                network."
+            .to_owned();
+    };
+    if let Some(phone) = app.cast_senders.first() {
+        return format!("Casting from {phone}.");
+    }
+    match &app.cast_status {
+        Status::Ready => format!("In the Cast menu as “{name}”."),
+        Status::Failed(error) => format!("Not in the Cast menu yet: {error}. Still trying."),
+        Status::Off | Status::Connecting => "Connecting to YouTube…".to_owned(),
+    }
 }
 
 fn account(app: &mut App, ui: &mut egui::Ui) {

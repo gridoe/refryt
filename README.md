@@ -152,6 +152,7 @@ To build from source, see [Build from source](#build-from-source).
 - Audio quality, volume normalisation and autoplay when the queue runs out.
 - Brand account switching from the account menu.
 - Tray icon, start on boot, media keys, system media controls, and optional Discord Rich Presence.
+- Casting from the YouTube Music app on a phone, with the phone as the remote.
 - Resizable sidebars; the left one folds down to an icon rail.
 
 ## Using refryt
@@ -177,6 +178,12 @@ On macOS, Ctrl is Cmd. One click selects a song and two play it, as in Spotify; 
 ### Themes
 
 The 23 themes are CSS files in the config folder's `themes` folder, and can be edited or added ([docs/THEMES.md](docs/THEMES.md)). Settings has window transparency and background blur. Blur works on KDE Plasma under Wayland, compositors with ext-background-effect (niri, GNOME 51 and newer), Windows and macOS.
+
+### Casting from a phone
+
+With "Cast from YouTube Music" on in Settings, Integrations, the computer shows up in the Cast menu of the YouTube Music app on phones on the same network, next to the TVs and speakers. What the phone casts plays in refryt: its queue becomes refryt's queue, and play, pause, seek, skip and volume work from either side. The YouTube app can cast to it too, and plays as audio.
+
+It is off by default. While it is on, refryt answers device discovery on the local network (UDP port 1900) and takes pairing requests on TCP port 47023, so a firewall has to let both in, and any device on the network can start playback, as with a TV or a Chromecast. Nothing is cast in the other direction: refryt is a receiver, not a remote for other devices.
 
 ### Signing in
 

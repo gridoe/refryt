@@ -405,6 +405,11 @@ pub struct Settings {
     /// connects as refryt's own Discord application — the id is fixed in `crate::discord` — so
     /// turning it on is the only setup there is.
     pub discord_rich_presence: bool,
+    /// Show this computer in the Cast menu of YouTube Music on phones on the same network, and
+    /// play what they cast (see `crate::cast`). Off by default: it answers discovery on the
+    /// local network and lets any device on it start playback here, which is worth an explicit
+    /// yes.
+    pub cast_receiver: bool,
     /// Ask LRCLIB for synced lyrics. On by default; off, lyrics come from YouTube alone, as
     /// plain text. LRCLIB gets the song's title, artist, album and length while the lyrics are
     /// shown, so it is a switch: see PRIVACY.md.
@@ -469,6 +474,7 @@ impl Default for Settings {
             start_on_boot: false,
             hide_tray_on_close: false,
             discord_rich_presence: false,
+            cast_receiver: false,
             lrclib_lyrics: true,
             local_folders: Vec::new(),
             playlist_default_sort: crate::app::PlaylistSort::Default,

@@ -507,6 +507,8 @@ pub enum Event {
         error: String,
         generation: u64,
     },
+    /// The cast receiver has something to say: a phone connected, or asked for something.
+    Cast(crate::cast::CastEvent),
     /// Cover art finished decoding on a worker; the UI thread uploads it as a texture.
     ImageReady(Box<images::Loaded>),
     /// The URL and the size that was asked for — the cache keys on both.
@@ -2838,6 +2840,16 @@ impl Backend {
             };
             Self::emit(&tx, &ctx, event);
         });
+    }
+
+    /// Start the cast receiver (see `crate::cast`): this computer in YouTube Music's Cast menu.
+    /// It runs on this runtime and reports through the same channel as everything else here;
+    /// dropping the handle stops it.
+    pub fn start_cast(&self) -> crate::cast::Cast {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        crate::cast::Cast::spawn(self.rt.handle(), Arc::clone(&self.api), move |event| {
+            Self::emit(&tx, &ctx, Event::Cast(event));
+        })
     }
 
     /// Take everything that finished since the last frame. Never blocks.

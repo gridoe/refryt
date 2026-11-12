@@ -4913,6 +4913,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "skrifa",
+ "socket2",
  "tao",
  "tokio",
  "tracing",
