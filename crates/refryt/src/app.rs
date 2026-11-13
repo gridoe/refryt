@@ -139,6 +139,29 @@ fn nudged_volume(muted: bool, last: f64, step: f64) -> f64 {
     (if muted { 0.0 } else { last }) + step
 }
 
+/// How long a seek a phone asked for stands in for the player's position: mpv takes the seek
+/// at once but reports the old position until the stream has moved, and telling the phone that
+/// would snap its scrubber back.
+const CAST_SEEK_SETTLE: Duration = Duration::from_secs(3);
+/// How close the player has to get to that seek before its own position is believed again.
+const CAST_SEEK_NEAR: f64 = 2.0;
+/// Where `video_id` is in `tracks`, the place nearest `around` when it is there more than once:
+/// the song playing, found again in a list that changed under it.
+fn nearest_index(tracks: &[Track], video_id: &str, around: usize) -> Option<usize> {
+    tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.video_id == video_id)
+        .min_by_key(|(i, _)| i.abs_diff(around))
+        .map(|(i, _)| i)
+}
+
+/// Whether `queue` opens with `list`, track for track. A phone's list is still this queue when
+/// it does: what follows it is the autoplay tail this app added.
+fn queue_starts_with(queue: &[Track], list: &[Track]) -> bool {
+    queue.len() >= list.len() && same_queue(&queue[..list.len()], list)
+}
+
 /// Which mix row is the seed, when the mix should be adopted under the song already playing
 /// rather than started from the top: the seed must be the loaded track, playback must have
 /// actually started, and the mix must carry the seed itself. Pure so the rule is testable.
@@ -1921,6 +1944,23 @@ pub struct App {
     /// the progress bar Discord is drawing has been broken by a seek, which needs a resend.
     presence_position: f64,
     presence_sent_at: Instant,
+    /// The cast receiver, while its setting is on (see `crate::cast`). Dropping it stops it.
+    cast: Option<crate::cast::Cast>,
+    /// Where the receiver stands, for Settings.
+    pub(crate) cast_status: crate::cast::Status,
+    /// The phones casting here, by name.
+    pub(crate) cast_senders: Vec<String>,
+    /// The network the computer is on, once looked at (see `crate::network`). `None` inside
+    /// before the first look; `Some(None)` with no network.
+    pub(crate) network: Option<Option<crate::network::Network>>,
+    /// What the receiver was last told is playing, and when: it is told again only once a phone
+    /// shown that would be showing something wrong.
+    cast_told: Option<(crate::cast::Snapshot, Instant)>,
+    /// A seek a phone asked for, and when, until the player has caught up with it.
+    cast_seek: Option<(f64, Instant)>,
+    /// A load was issued and its `Event::Resolving` has not landed. For that one pass `now`
+    /// still describes the song being left, as paused, which is not worth telling a phone.
+    load_issued: bool,
     /// Kept for the video view, which creates its mpv render context lazily.
     ctx: egui::Context,
     /// Whether the in-app music video is showing in the content card.
@@ -2340,6 +2380,13 @@ impl App {
             media_key: None,
             presence_position: 0.0,
             presence_sent_at: Instant::now(),
+            cast: None,
+            cast_status: crate::cast::Status::Off,
+            cast_senders: Vec::new(),
+            network: None,
+            cast_told: None,
+            cast_seek: None,
+            load_issued: false,
             ctx: cc.egui_ctx.clone(),
             video_open: false,
             video: None,
@@ -2364,6 +2411,12 @@ impl App {
         // Start the presence here too, not only from a Settings change: a launch with the setting
         // already on should show up without the user having to toggle it off and back on.
         app.sync_discord();
+        // The same for the cast receiver, once the network it runs on is known.
+        if crate::network::SUPPORTED {
+            app.backend.watch_network();
+        } else {
+            app.sync_cast();
+        }
         // Heal the autostart entry an earlier version left behind — a stale path, or one without
         // the `--autostart` flag this version's startup request needs — and drop one the setting
         // no longer wants. The Settings toggle writes it directly; this is the once-a-launch
@@ -2651,6 +2704,11 @@ impl App {
         // so there is nothing else about the integration that can change.
         if self.settings.discord_rich_presence != before.discord_rich_presence {
             self.sync_discord();
+        }
+        if self.settings.cast_receiver != before.cast_receiver
+            || self.settings.cast_networks != before.cast_networks
+        {
+            self.sync_cast();
         }
         if let Err(e) = crate::settings::save(&self.settings) {
             tracing::warn!(error = %format!("{e:#}"), "could not save settings");
@@ -3078,6 +3136,339 @@ impl App {
         self.presence_key = None;
     }
 
+    /// Start or stop the cast receiver to match the setting and the network. Called on a
+    /// Settings change, on a change of network, and once at launch.
+    pub(crate) fn sync_cast(&mut self) {
+        let wanted = self.settings.cast_receiver && self.cast_allowed_here();
+        if wanted == self.cast.is_some() {
+            return;
+        }
+        self.cast = wanted.then(|| self.backend.start_cast());
+        // A new receiver has been told nothing, and nobody is on it yet.
+        self.cast_told = None;
+        self.cast_senders.clear();
+        self.cast_status = crate::cast::Status::Off;
+    }
+
+    /// Whether casting may run on the network the computer is on: one the user allowed. Where
+    /// the system cannot say which network it is on, the setting alone decides.
+    pub(crate) fn cast_allowed_here(&self) -> bool {
+        if !crate::network::SUPPORTED {
+            return true;
+        }
+        let Some(Some(here)) = &self.network else {
+            return false;
+        };
+        self.settings.cast_networks.iter().any(|n| n.id == here.id)
+    }
+
+    /// The network the computer is on, when known.
+    pub(crate) fn current_network(&self) -> Option<&crate::network::Network> {
+        self.network.as_ref().and_then(Option::as_ref)
+    }
+
+    /// The cast switch: casting on or off on the network the computer is on. Other networks
+    /// allowed stay as they are. Where the system cannot say which network it is on, it is the
+    /// plain setting.
+    pub(crate) fn set_cast_here(&mut self, ctx: &egui::Context, on: bool) {
+        let here = self.current_network().cloned();
+        self.update_settings(ctx, |s| {
+            let Some(here) = here.filter(|_| crate::network::SUPPORTED) else {
+                s.cast_receiver = on;
+                return;
+            };
+            if on {
+                s.cast_receiver = true;
+                if !s.cast_networks.iter().any(|n| n.id == here.id) {
+                    s.cast_networks.push(crate::settings::CastNetwork {
+                        id: here.id,
+                        name: here.name,
+                    });
+                }
+            } else {
+                s.cast_networks.retain(|n| n.id != here.id);
+            }
+        });
+    }
+
+    /// Stop allowing casting on a network.
+    pub(crate) fn forget_cast_network(&mut self, ctx: &egui::Context, id: &str) {
+        self.update_settings(ctx, |s| s.cast_networks.retain(|n| n.id != id));
+    }
+
+    fn on_network(&mut self, network: Option<crate::network::Network>) {
+        self.network = Some(network);
+        // The name can change under the same router (a renamed Wi-Fi): keep the list's current.
+        if let Some(here) = self.current_network().cloned()
+            && let Some(kept) = self
+                .settings
+                .cast_networks
+                .iter_mut()
+                .find(|n| n.id == here.id && n.name != here.name)
+        {
+            kept.name = here.name;
+            if let Err(e) = crate::settings::save(&self.settings) {
+                tracing::warn!(error = %format!("{e:#}"), "could not save settings");
+            }
+        }
+        self.sync_cast();
+    }
+
+    /// The name phones list this computer under, while the receiver is on.
+    pub(crate) fn cast_name(&self) -> Option<&str> {
+        self.cast.as_ref().map(|cast| cast.name())
+    }
+
+    /// Tell the cast receiver what is playing, once a phone shown the last word would be showing
+    /// something wrong. Called right after `publish_media`, so all three see the same transport.
+    fn publish_cast(&mut self) {
+        // One pass after a load is issued `now` is still the song being left: wait for the
+        // next, which has the new one loading.
+        if self.cast.is_none() || self.load_issued {
+            return;
+        }
+        let snapshot = self.cast_snapshot();
+        if let Some((told, at)) = &self.cast_told
+            && !snapshot.differs_from(told, at.elapsed())
+        {
+            return;
+        }
+        tracing::debug!(
+            state = ?snapshot.state,
+            position = snapshot.position,
+            volume = snapshot.volume,
+            "cast: telling the phones"
+        );
+        if let Some(cast) = &self.cast {
+            cast.publish(snapshot.clone());
+        }
+        self.cast_told = Some((snapshot, Instant::now()));
+    }
+
+    /// The transport as a phone shows it.
+    fn cast_snapshot(&mut self) -> crate::cast::Snapshot {
+        use crate::cast::PlayState;
+        let state = self.player_state;
+        // A local file has no id a phone could show.
+        let track = self.now.track.as_ref().filter(|t| t.local_path.is_none());
+        // mpv keeps the outgoing file until the next one loads, and for a moment after it takes
+        // a load it has no position or length for the new one either. Until the song has been
+        // seen to play, it is loading from the load's own start; told any sooner, a phone handing
+        // over a song half way through would see it jump to zero and back.
+        let loading = self.now.resolving || (self.playback_started && !self.stall.played_any);
+        let play_state = match track {
+            None => PlayState::Idle,
+            Some(_) if loading => PlayState::Loading,
+            Some(_) if self.playback_started && !state.paused => PlayState::Playing,
+            Some(_) => PlayState::Paused,
+        };
+        // A restored track has its saved position, as `publish_media` shows it.
+        let mut position = if loading {
+            self.stall.start_position().unwrap_or(0.0)
+        } else if self.playback_started {
+            state.position
+        } else {
+            self.q.resume_here().unwrap_or(0.0)
+        };
+        if let Some((to, at)) = self.cast_seek {
+            if at.elapsed() < CAST_SEEK_SETTLE && (position - to).abs() > CAST_SEEK_NEAR {
+                position = to;
+            } else {
+                self.cast_seek = None;
+            }
+        }
+        let duration = if self.playback_started && !loading && state.duration > 0.0 {
+            state.duration
+        } else {
+            track.and_then(|t| t.duration).map_or(0.0, |d| d as f64)
+        };
+        let chosen = self.radio.as_ref().map(|r| &r.chosen);
+        crate::cast::Snapshot {
+            video_id: track.map(|t| t.video_id.clone()),
+            state: play_state,
+            position: position.max(0.0),
+            duration,
+            volume: if self.muted {
+                0
+            } else {
+                self.last_volume.round().clamp(0.0, 100.0) as u8
+            },
+            muted: self.muted,
+            has_previous: self.q.current().is_some(),
+            has_next: self.q.peek_next(self.repeat, chosen).is_some(),
+            index: self.q.current(),
+        }
+    }
+
+    /// Act on what the cast receiver said: a phone came or went, or asked for something. What a
+    /// phone asks for goes through the same doors as a media key.
+    fn on_cast_event(&mut self, event: crate::cast::CastEvent) {
+        use crate::cast::CastEvent;
+        match event {
+            CastEvent::Status(status) => self.cast_status = status,
+            CastEvent::Senders {
+                names,
+                joined,
+                left,
+                explicit,
+            } => {
+                self.cast_senders = names;
+                if let Some(name) = joined.first() {
+                    self.toast(&format!("Casting from {name}"));
+                } else if let Some(name) = left.first() {
+                    self.toast(&format!("{name} disconnected"));
+                    // Its own Disconnect: the phone plays on by itself from here, and the two
+                    // would otherwise play at once. A phone that fell asleep or left the network
+                    // changes nothing.
+                    if explicit && self.cast_senders.is_empty() {
+                        self.cast_set_paused(true);
+                    }
+                }
+            }
+            CastEvent::Queue(queue) => self.cast_queue(*queue),
+            CastEvent::Play => self.cast_set_paused(false),
+            // A phone's Stop is its queue closing; the song stays loaded here, paused.
+            CastEvent::Pause | CastEvent::Stop => self.cast_set_paused(true),
+            CastEvent::SeekTo(to) => {
+                self.seek_to(to);
+                self.cast_seek = Some((to, Instant::now()));
+            }
+            CastEvent::Next => self.skip(1),
+            CastEvent::Previous => self.skip(-1),
+            CastEvent::SetVolume { volume, muted } => match muted {
+                Some(true) => {
+                    if !self.muted {
+                        self.toggle_mute();
+                    }
+                }
+                _ => self.set_user_volume(volume),
+            },
+        }
+    }
+
+    /// Pause or resume for a phone. Set rather than toggled, and asked of the player itself:
+    /// `now.paused` is a pass old, and a pause and a play arriving together would cancel out.
+    fn cast_set_paused(&mut self, paused: bool) {
+        if self.playback_started {
+            if let Some(player) = &self.player {
+                player.set_paused(paused);
+            }
+        } else if !paused && !self.now.resolving && !self.load_issued {
+            // Nothing is loaded: a restored queue, started as the play button starts it.
+            self.toggle_playback();
+        }
+    }
+
+    /// Make a phone's queue this queue.
+    fn cast_queue(&mut self, queue: crate::cast::CastQueue) {
+        let crate::cast::CastQueue {
+            mut tracks,
+            index,
+            position,
+            more,
+            filters,
+            update,
+        } = queue;
+        if tracks.is_empty() {
+            return;
+        }
+        let index = index.min(tracks.len() - 1);
+        let loaded = self
+            .now
+            .track
+            .as_ref()
+            .filter(|_| self.playback_started || self.now.resolving)
+            .cloned();
+        if update && queue_starts_with(self.q.tracks(), &tracks) {
+            // The list as it already is here, said again: a phone that reconnected. Only the
+            // rows that have since been looked up are taken; the queue and its autoplay tail
+            // stay as they are.
+            let n = tracks.len();
+            for (mine, theirs) in self.q.tracks_mut()[..n].iter_mut().zip(tracks) {
+                if mine.title != theirs.title {
+                    *mine = theirs;
+                }
+            }
+            if let Some(track) = self.q.current_track().cloned()
+                && self
+                    .now
+                    .track
+                    .as_ref()
+                    .is_some_and(|t| t.video_id == track.video_id && t.title != track.title)
+            {
+                self.now.track = Some(track);
+            }
+            return;
+        }
+        if update {
+            // The list changed under the song playing: find the song in it again, nearest
+            // where it was. A song that is no longer the phone's (it was removed, or it is one
+            // this app's autoplay added) plays on at the head of the list rather than stopping
+            // because a queue was edited.
+            let Some(playing) = loaded else {
+                let radio = Radio::pending(&tracks);
+                self.replace_queue(tracks, 0, radio);
+                return;
+            };
+            let around = self.q.current().unwrap_or(0);
+            let at = nearest_index(&tracks, &playing.video_id, around).unwrap_or_else(|| {
+                tracks.insert(0, playing);
+                0
+            });
+            let radio = Radio::pending(&tracks);
+            self.adopt_queue(tracks, at, radio);
+            return;
+        }
+        // A list the phone left to YouTube flows on as a mix started here would; one of its own
+        // songs gets the latent river every hand-picked queue has.
+        let radio = match more {
+            Some(token) => Some(Radio {
+                state: River::Open(token),
+                chosen: std::iter::once(tracks[index].video_id.clone()).collect(),
+                seed: tracks[index].video_id.clone(),
+                filters,
+                filtering: None,
+            }),
+            None => Radio::pending(&tracks),
+        };
+        let position = (position > 1.0).then_some(position);
+        // The song the phone names is the one already loaded: a phone that reconnected, or
+        // sent its queue again. The transport is left exactly as it is — the position such a
+        // message carries is where the phone last saw the song, not where it is — and only the
+        // list around it is taken. The receiver answers with where the song really stands.
+        if self.playback_started && loaded.is_some_and(|t| t.video_id == tracks[index].video_id) {
+            if !(self.q.current() == Some(index) && queue_starts_with(self.q.tracks(), &tracks)) {
+                self.adopt_queue(tracks, index, radio);
+            }
+            return;
+        }
+        if queue_starts_with(self.q.tracks(), &tracks) {
+            // Another song from the list already here: a move within the queue, as a click in
+            // Up next is, with its autoplay tail left alone.
+            self.q.remember_current();
+        } else {
+            self.replace_queue(tracks, index, radio);
+        }
+        self.q.set_resume(position.map(|p| (index, p)));
+        self.play_index_restore(index);
+    }
+
+    /// Swap the queue under the song playing, which is at `at` in the new one. Nothing is
+    /// loaded and nothing restarts, and the queue being left is not kept for Previous: it is
+    /// the same queue, edited.
+    fn adopt_queue(&mut self, tracks: Vec<Track>, at: usize, radio: Option<Radio>) {
+        self.radio = radio;
+        self.q
+            .revise(tracks, at, self.radio.as_ref().map(|r| &r.chosen));
+        // The new row may know more about the song than the one that started it: a title that
+        // took a lookup of its own.
+        if let Some(mut track) = self.q.get(at).cloned() {
+            self.reconcile_state(&mut track);
+            self.now.track = Some(track);
+        }
+        self.prefetch_next();
+    }
+
     /// Bring back the last queue, track and transport from `playback.json`. The track is shown
     /// paused; pressing play loads it and seeks to `resume`. Nothing is fetched or scrobbled
     /// here — a restore is not a play.
@@ -3304,6 +3695,8 @@ impl App {
         self.publish_media();
         // Same snapshot, said to Discord.
         self.publish_presence();
+        // And to the phones casting here.
+        self.publish_cast();
 
         // The next wake-up, which is what keeps this running while the window is hidden: eframe
         // calls `logic` then only when a repaint has been asked for. Loading asks for no frames of
@@ -3490,6 +3883,7 @@ impl App {
             "starting track"
         );
         self.stall.on_load(&track.video_id, start_at);
+        self.load_issued = true;
         if plays_as_video(self.video_open, track.wide) && self.ensure_video_surface() {
             self.play_is_video = true;
             return self.backend.play_video(track, handle, volume, start_at);
@@ -5821,6 +6215,7 @@ impl App {
                 // for a play already superseded by a later one (see `play_generation`'s own doc
                 // comment) — dropped rather than let it silently overwrite `now` out of order.
                 Event::Resolving(mut track, generation) if generation == self.play_generation => {
+                    self.load_issued = false;
                     self.reconcile_state(&mut track);
                     self.now = NowPlaying {
                         track: Some(track),
@@ -5860,6 +6255,8 @@ impl App {
                     }
                 }
                 Event::Playing(..) => {}
+                Event::Cast(event) => self.on_cast_event(event),
+                Event::Network(network) => self.on_network(network),
                 // A mix card's own play (`play_playlist`), seeded with the mix's id: only the
                 // card clicked last may start, as for `CardTracksReady`.
                 Event::MixLoaded { seed, .. }
@@ -8243,6 +8640,12 @@ impl eframe::App for App {
         self.log_play(done);
         self.backend
             .close_song_cache(self.settings.cache_songs && !self.settings.cache_clear_on_close);
+        // Tell the network and any phone casting here that this is going, while the runtime
+        // that can still say so exists. With no phone on it that is one datagram; with one, a
+        // request, waited for briefly so the phone does not go on showing a device that left.
+        if let Some(cast) = self.cast.take() {
+            cast.close(Duration::from_secs(1));
+        }
     }
 
     /// eframe calls this periodically and on exit, so the queue survives a normal close as well
@@ -9639,6 +10042,31 @@ mod tests {
 
     /// Previous restarts the track once it is underway, and only steps back within the first
     /// few seconds — so pressing it repeatedly walks backwards from the start.
+    /// The song playing, found again in a list a phone changed under it.
+    #[test]
+    fn the_playing_song_is_found_nearest_where_it_was() {
+        let list = queue_ids(&["a", "b", "a", "c", "a"]);
+        assert_eq!(nearest_index(&list, "a", 0), Some(0));
+        assert_eq!(nearest_index(&list, "a", 3), Some(2));
+        assert_eq!(nearest_index(&list, "a", 9), Some(4));
+        assert_eq!(nearest_index(&list, "c", 0), Some(3));
+        assert_eq!(nearest_index(&list, "z", 0), None);
+    }
+
+    /// A phone's list is still the queue when the queue opens with it; what follows is the
+    /// autoplay tail.
+    #[test]
+    fn a_queue_opens_with_a_list_it_only_added_to() {
+        let queue = queue_ids(&["a", "b", "c", "radio"]);
+        assert!(queue_starts_with(&queue, &queue_ids(&["a", "b", "c"])));
+        assert!(queue_starts_with(&queue, &queue));
+        assert!(!queue_starts_with(&queue, &queue_ids(&["a", "c"])));
+        assert!(!queue_starts_with(
+            &queue,
+            &queue_ids(&["a", "b", "c", "radio", "more"])
+        ));
+    }
+
     #[test]
     fn previous_restarts_the_track_once_it_is_underway() {
         assert!(!previous_restarts(0.0));

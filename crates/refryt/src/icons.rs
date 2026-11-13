@@ -23,6 +23,7 @@ icons! {
     ChevronLeft => "chevron-left",
     ChevronRight => "chevron-right",
     Check => "check",
+    Copy => "copy",
     Compass => "compass",
     CircleHelp => "circle-help",
     CircleUser => "circle-user",

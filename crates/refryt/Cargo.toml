@@ -54,6 +54,10 @@ walkdir = "2.5.0"
 # Local dates for the Stats page. Already in the build through ytmapi-rs.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 discord-rich-presence = "1.1"
+# The cast receiver's discovery socket (`cast/dial.rs`): UDP 1900 has to be opened shared and
+# joined to a multicast group, which `std` and tokio cannot ask for. Already compiled for tokio
+# and hyper, at this version, so it adds an edge rather than a crate.
+socket2 = { version = "0.6", features = ["all"] }
 # Folds the "styled" letters channels write titles in (𝐓𝐢𝐦𝐞𝐥𝐞𝐬𝐬, Unicode's Mathematical
 # Alphanumeric Symbols) back to plain ones, which no bundled font covers. Already compiled for
 # reqwest's IDNA support, at this version, so it adds nothing to the build.
@@ -120,10 +124,14 @@ tao = "0.37"
 # `-UI_WindowsAndMessaging` are `open_url`'s `ShellExecuteW`. `-Graphics_Dwm`, `-Graphics_Gdi` and
 # `-UI_Controls` are `blur.rs`: the acrylic backdrop, the rounded corners, and the black
 # redirection surface that lets the transparent shell show the desktop.
+# `-NetworkManagement_IpHelper` and `-Networking_WinSock` are `network.rs`: the default gateway
+# and its hardware address, which tell one network from another for the cast setting.
 windows-sys = { version = "=0.52.0", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_System_Registry",
     "Win32_System_Threading",

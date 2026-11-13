@@ -484,6 +484,25 @@ impl PlayQueue {
         self.load(tracks, start, chosen);
     }
 
+    /// Put `tracks` in the queue's place with the playing track at `current`: the same queue,
+    /// edited from outside (a phone casting here added, removed or moved a song). Unlike
+    /// [`Self::replace`] the old list is not kept for Previous, and the track playing goes on
+    /// playing. The points Previous retraces index the old list and are dropped; a shuffle is
+    /// drawn again around the playing track.
+    pub(crate) fn revise(&mut self, tracks: Vec<Track>, current: usize, chosen: Chosen) {
+        // A restored position belongs to the playing track, wherever it now is.
+        let resume = self.resume_here();
+        self.tracks = tracks;
+        self.current = Some(current).filter(|&i| i < self.tracks.len());
+        self.resume = self.current.zip(resume);
+        self.history.forget_within_queue();
+        if self.shuffle.is_some() {
+            let mut order = self.draw(self.current, chosen);
+            order.pos = self.current.map(|_| 0);
+            self.shuffle = Some(order);
+        }
+    }
+
     /// Bring back a queue Previous rewound to; it is not remembered again.
     pub(crate) fn restore_queue(&mut self, tracks: Vec<Track>, start: usize, chosen: Chosen) {
         self.load(tracks, start, chosen);
@@ -842,6 +861,47 @@ mod tests {
         let mut q = PlayQueue::new(7);
         q.restore_session(tracks(list), Some(current), None, false, None);
         q
+    }
+
+    /// A list edited from outside: the playing track goes on at its new place, and Previous
+    /// no longer retraces places that belonged to the old list.
+    #[test]
+    fn a_revised_queue_keeps_the_playing_track_and_forgets_the_old_places() {
+        let mut q = queue(&["a", "b", "c"], 1);
+        q.remember_current();
+        q.set_current(2);
+        q.set_resume(Some((2, 40.0)));
+        // "x" was added in front, "b" removed: the playing "c" is now second.
+        q.revise(tracks(&["x", "a", "c", "d"]), 2, None);
+        assert_eq!(q.current(), Some(2));
+        assert_eq!(q.current_track().unwrap().video_id, "c");
+        assert_eq!(q.len(), 4);
+        assert_eq!(q.resume_here(), Some(40.0), "its place in the song stays");
+        assert!(
+            q.rewind().is_none(),
+            "a place in the old list must not be gone back to"
+        );
+        assert_eq!(q.next(RepeatMode::Off, None), Some(3));
+    }
+
+    /// Unlike a replaced queue, a revised one is not kept to come back to.
+    #[test]
+    fn a_revised_queue_is_not_remembered_as_another_queue() {
+        let mut q = queue(&["a", "b"], 0);
+        q.revise(tracks(&["a", "b", "c"]), 0, None);
+        assert!(q.rewind().is_none());
+    }
+
+    #[test]
+    fn a_revised_queue_under_shuffle_is_drawn_again_around_the_playing_track() {
+        let mut q = queue(&["a", "b", "c", "d"], 1);
+        q.set_shuffle(true, None);
+        q.revise(tracks(&["a", "b", "c", "d", "e", "f"]), 1, None);
+        assert_eq!(q.current(), Some(1));
+        // Everything but the playing track is still to come, each once.
+        let mut upcoming = q.upcoming(RepeatMode::Off, None);
+        upcoming.sort_unstable();
+        assert_eq!(upcoming, [0, 2, 3, 4, 5]);
     }
 
     /// Play every track by Next from the current one until the transport stops or `cap` plays.

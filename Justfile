@@ -60,6 +60,11 @@ resolve-native *ids:
 api q="radiohead nude":
     cargo run --release -q -p refryt --bin api-check -- "{{q}}"
 
+# Drive the cast receiver as a phone would: find it, pair, cast a queue and check what it says
+# back. Needs refryt running with "Cast from YouTube Music" on; it really plays what it casts.
+cast-check *args:
+    python3 scripts/cast-check.py {{args}}
+
 # Run the api canary daily via a systemd user timer, so YouTube breakage pages us first.
 canary-install:
     ./scripts/canary-install.sh install
