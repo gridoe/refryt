@@ -1128,13 +1128,35 @@ fn cast_help(ui: &mut egui::Ui, p: &theme::Palette, port: u16) {
                 ),
             );
         }
+        // Windows' own "allow access" prompt is not enough: it may never come up, it covers only
+        // the profiles ticked in it, and a network Windows calls Public is the default. So the
+        // rule is spelled out, for this exe and this network's range. The range is written out
+        // rather than `LocalSubnet`: with that keyword the phone's discovery searches were still
+        // dropped in testing, and with the range they came in.
         #[cfg(target_os = "windows")]
-        line(
-            ui,
-            "The first time this is on, Windows asks whether refryt may use the network. Allow \
-             it on private networks. If you said no, allow refryt under Windows Security, \
-             Firewall & network protection, Allow an app through firewall.",
-        );
+        {
+            let exe = std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| r"C:\Program Files\refryt\refryt.exe".to_owned());
+            let from = local_range().map_or(String::new(), |r| format!(" -RemoteAddress {r}"));
+            ui.add_space(4.0);
+            line(
+                ui,
+                "Windows Firewall lets neither in until a rule allows it, on a Public network \
+                 too. In PowerShell run as administrator:",
+            );
+            command(
+                ui,
+                p,
+                "cast-windows",
+                &format!(
+                    "New-NetFirewallRule -DisplayName \"refryt cast discovery\" -Direction Inbound \
+                     -Action Allow -Program \"{exe}\" -Protocol UDP -LocalPort 1900{from}\n\
+                     New-NetFirewallRule -DisplayName \"refryt cast pairing\" -Direction Inbound \
+                     -Action Allow -Program \"{exe}\" -Protocol TCP -LocalPort {port}{from}"
+                ),
+            );
+        }
         #[cfg(target_os = "macos")]
         line(
             ui,
@@ -1146,7 +1168,7 @@ fn cast_help(ui: &mut egui::Ui, p: &theme::Palette, port: u16) {
 }
 
 /// Commands to paste into a terminal, in a box with a Copy button.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn command(ui: &mut egui::Ui, p: &theme::Palette, id: &str, text: &str) {
     let copied_id = ui.id().with((id, "copied"));
     let copied_at: Option<f64> = ui.data(|d| d.get_temp(copied_id));
@@ -1196,7 +1218,7 @@ fn command(ui: &mut egui::Ui, p: &theme::Palette, id: &str, text: &str) {
 
 /// The private range this computer's network address is in, for a firewall rule that lets in
 /// only this network. Asks the system which address it would send from, without sending.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn local_range() -> Option<&'static str> {
     let socket = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
     socket.connect(("239.255.255.250", 1900)).ok()?;
