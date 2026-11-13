@@ -213,8 +213,12 @@ pub fn player_bar(app: &mut App, ui: &mut egui::Ui) {
     // menu opens. `marquee_line` hands back its own click-sensing viewport when the title
     // overflows; a title that fits gets a hit rect the width of its text, so neither the
     // blank field nor the credits answer the pointer.
+    // While a phone is casting, a third line says so under the credits, and the two lines
+    // above move up to make room for it.
+    let casting = app.casting_from().filter(|_| app.now.track.is_some());
+    let lift = if casting.is_some() { 7.0 } else { 0.0 };
     let title_font = theme::medium(13.0);
-    let title_pos = egui::pos2(title_x, rect.center().y - 9.0);
+    let title_pos = egui::pos2(title_x, rect.center().y - 9.0 - lift);
     let title_w = widgets::text_width(ui, &title, &title_font).min(field_w);
     let title_rect = Rect::from_min_size(
         egui::pos2(title_pos.x, title_pos.y - widgets::MARQUEE_HIT_H / 2.0),
@@ -278,7 +282,16 @@ pub fn player_bar(app: &mut App, ui: &mut egui::Ui) {
     // artist is clickable and the album is a link too. The viewport is the field, not a
     // width derived from the title — a short song name no longer starves its own credits.
     // Scrolls on hover like the title.
-    let baseline = egui::pos2(title_x, rect.center().y + 9.0);
+    let baseline = egui::pos2(title_x, rect.center().y + 9.0 - lift);
+    if let Some(casting) = &casting {
+        ui.painter().text(
+            egui::pos2(title_x, rect.center().y + 18.0),
+            egui::Align2::LEFT_CENTER,
+            widgets::truncate_to(ui, casting, theme::medium(11.0), field_w),
+            theme::medium(11.0),
+            p.accent,
+        );
+    }
     let mut navigate = None;
     match &status {
         Some((text, colour)) => {

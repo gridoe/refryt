@@ -3219,6 +3219,15 @@ impl App {
         self.sync_cast();
     }
 
+    /// The line under the playing song while a phone casts to it: which phone.
+    pub(crate) fn casting_from(&self) -> Option<String> {
+        let first = self.cast_senders.first()?;
+        Some(match self.cast_senders.len() {
+            1 => format!("Casting from {first}"),
+            n => format!("Casting from {first} and {} more", n - 1),
+        })
+    }
+
     /// The name phones list this computer under, while the receiver is on.
     pub(crate) fn cast_name(&self) -> Option<&str> {
         self.cast.as_ref().map(|cast| cast.name())

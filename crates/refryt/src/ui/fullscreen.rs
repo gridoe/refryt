@@ -68,6 +68,8 @@ pub(crate) struct Metrics {
     pub controls_w: f32,
     /// Under this width the lyrics take the whole screen and the cover steps aside.
     pub narrow: f32,
+    /// A phone is casting, so the song's name has a third line under it (`info_text`).
+    pub casting: bool,
 }
 
 impl Metrics {
@@ -102,6 +104,7 @@ impl Metrics {
             play: 60.0 * s,
             controls_w: 760.0 * s,
             narrow: 640.0 * s,
+            casting: false,
         }
     }
 }
@@ -626,6 +629,12 @@ fn draw(app: &mut App, ui: &mut egui::Ui) {
     } else {
         (window, Metrics::new(window), CornerRadius::ZERO)
     };
+    // While a phone is casting, the song's name has a third line under it (`info_text`).
+    let mut m = m;
+    if app.casting_from().is_some() {
+        m.casting = true;
+        m.info_h += m.credits * 1.3;
+    }
     let strip = Rect::from_min_max(
         window.min,
         pos2(window.right(), window.top() + theme::TITLEBAR_HEIGHT),
@@ -1389,6 +1398,18 @@ fn info_text(app: &App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, centre_t: f3
         )
         .map(crate::ui::link_route)
     });
+    // While a phone is casting, a line under the credits says which.
+    if let Some(casting) = app.casting_from().filter(|_| track.is_some()) {
+        let font = theme::medium((m.credits * 0.85).max(11.0));
+        let full = widgets::text_width(ui, &casting, &font);
+        ui.painter().text(
+            pos2(at(full), y + m.credits * 1.35),
+            egui::Align2::LEFT_CENTER,
+            widgets::truncate_to(ui, &casting, font.clone(), rect.width()),
+            font,
+            p.accent,
+        );
+    }
     let album_route = title_hit
         .clicked()
         .then(|| track.and_then(|t| t.album_id.clone()).map(Route::Album))
@@ -1702,7 +1723,7 @@ pub(crate) fn drawer_split(drawer: Rect, m: &Metrics, wide: bool) -> Option<(Rec
     let small = drawer_type(m);
     let info = Rect::from_min_size(
         pos2(inner.left(), cover.bottom() + 14.0 * m.scale),
-        vec2(inner.width(), small.title * 1.4 + small.credits * 1.6),
+        vec2(inner.width(), head_name_height(&small)),
     );
     let list = Rect::from_min_max(pos2(drawer.left(), info.bottom()), drawer.max);
     Some((cover, info, list))
@@ -1719,9 +1740,13 @@ const HEAD_LIST_MIN: f32 = 30.0 + 3.0 * theme::ROW_HEIGHT;
 /// much that the queue under it is left fewer rows than [`HEAD_LIST_MIN`]. On a short window
 /// the cover gives way to the list, not the list to the cover.
 fn head_cover_height(height: f32, m: &Metrics) -> f32 {
-    let small = drawer_type(m);
-    let name = 14.0 * m.scale + small.title * 1.4 + small.credits * 1.6;
+    let name = 14.0 * m.scale + head_name_height(&drawer_type(m));
     (height * 0.5).min(height - name - HEAD_LIST_MIN)
+}
+
+/// The name under the cover at the queue's head: title, credits, and the casting line if any.
+fn head_name_height(small: &Metrics) -> f32 {
+    small.title * 1.4 + small.credits * if small.casting { 2.9 } else { 1.6 }
 }
 
 /// `a` to `b` by `t`.

@@ -241,10 +241,14 @@ mod tests {
 
     #[test]
     fn this_machine_knows_its_network() {
-        if cfg!(target_os = "linux") && std::path::Path::new("/proc/net/route").exists() {
-            // Only checks it does not panic: a build machine may well be offline.
-            let here = current();
-            println!("this network: {here:?}");
+        // Runs the real lookup wherever there is one, so each system's CI job goes through its
+        // own route and ARP path. Only checks it does not panic and prints what it found: a
+        // build machine may well be offline, or behind a gateway it cannot see.
+        let here = current();
+        println!("this network: {here:?}");
+        if let Some(here) = here {
+            assert_eq!(here.id.len(), 16);
+            assert!(!here.name.is_empty());
         }
     }
 }
