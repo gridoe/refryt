@@ -273,9 +273,11 @@ pub enum Event {
     TakeoutImported {
         result: Result<crate::takeout::Summary, String>,
     },
-    /// The account's history has been compared with the last look. Empty if the check failed.
+    /// The account's history has been compared with the last look. Empty, and not `ok`, if the
+    /// check failed.
     HistoryChecked {
         found: crate::history_poll::Found,
+        ok: bool,
     },
     /// Some of the songs asked for have been looked up and saved. `done` on the last batch.
     SongDetailsSaved {
@@ -1768,10 +1770,26 @@ impl Backend {
     }
 
     /// Add up the play log for a range, off the UI thread. `epoch` comes back with the answer.
-    pub fn load_listening_stats(&self, range: crate::listening_stats::StatsRange, epoch: u64) {
+    pub fn load_listening_stats(
+        &self,
+        range: crate::listening_stats::StatsRange,
+        scope: crate::listening_stats::StatsScope,
+        epoch: u64,
+    ) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
         self.rt.spawn_blocking(move || {
-            let event = match crate::listening_stats::load(range) {
+            let started = std::time::Instant::now();
+            let loaded = crate::listening_stats::load(range, scope);
+            if let Ok(report) = &loaded {
+                debug!(
+                    ?range,
+                    ?scope,
+                    logged = report.logged,
+                    ms = started.elapsed().as_millis() as u64,
+                    "stats added up"
+                );
+            }
+            let event = match loaded {
                 Ok(report) => Event::StatsLoaded {
                     report: Arc::new(report),
                     epoch,
@@ -1870,11 +1888,12 @@ impl Backend {
                 .and_then(|checked| checked),
                 Err(e) => Err(e),
             };
+            let ok = found.is_ok();
             let found = found.unwrap_or_else(|e| {
                 debug!(error = %format!("{e:#}"), "could not check the history");
                 Default::default()
             });
-            Self::emit(&tx, &ctx, Event::HistoryChecked { found });
+            Self::emit(&tx, &ctx, Event::HistoryChecked { found, ok });
         });
     }
 

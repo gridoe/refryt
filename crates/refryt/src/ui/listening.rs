@@ -6,11 +6,12 @@ use egui::{Align2, CornerRadius, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
 use crate::app::{App, Route};
 use crate::icons::Icon;
 use crate::listening_stats::{
-    Bar, Delta, Report, StatsRange, TopList, listening_time, plays_label,
+    Bar, Delta, Report, StatsRange, StatsScope, TopList, listening_time, plays_label,
 };
 use crate::theme;
 use crate::ui::{centered, failed, page_title, section};
 use crate::widgets;
+use crate::widgets::Hint;
 
 /// How many rows a top list shows on the Stats page.
 const TOP_SHOWN: usize = 5;
@@ -60,8 +61,8 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     crate::ui::page_scroll(app, "stats").show(ui, |ui| {
-        page_title(ui, &app.palette, "Stats");
-        range_chips(app, ui);
+        title_row(app, ui, "Stats");
+        range_chips(app, ui, report.elsewhere);
         if !app.settings.listening_stats {
             ui.add_space(8.0);
             quiet_line(
@@ -90,6 +91,65 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+/// The page's title, with when plays from other devices were last looked for and a button to
+/// look now at its right end. That part shows only where the look happens at all: signed in,
+/// with stats on.
+fn title_row(app: &mut App, ui: &mut egui::Ui, title: &str) {
+    let p = app.palette;
+    if !app.signed_in() || !app.settings.listening_stats {
+        page_title(ui, &p, title);
+        return;
+    }
+    let text = if app.history_checking {
+        "Updating…".to_owned()
+    } else {
+        match app.history_done {
+            Some((at, true)) => format!("Updated {}", ago(at.elapsed())),
+            Some((_, false)) => "Couldn't update".to_owned(),
+            None => "Not updated yet".to_owned(),
+        }
+    };
+    let mut check = false;
+    ui.add_space((theme::PAGE_INSET_X - crate::ui::PAGE_TITLE_LEAD).max(0.0));
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(title)
+                .font(theme::bold(theme::PAGE_TITLE_PT))
+                .color(p.text),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let button = ui.add_enabled_ui(!app.history_checking && !app.offline, |ui| {
+                widgets::icon_button(ui, &p, Icon::RefreshCw, 14.0, false)
+                    .hint("Get plays from your other devices")
+            });
+            check = button.inner.clicked();
+            ui.label(
+                egui::RichText::new(text)
+                    .font(theme::regular(12.0))
+                    .color(p.dim),
+            );
+        });
+    });
+    ui.add_space(10.0);
+    if check {
+        app.check_history_now();
+    }
+    // "3 min ago" has to move on by itself on an app with nothing else to paint.
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_secs(30));
+}
+
+/// "just now", "3 min ago", "2 h ago".
+fn ago(elapsed: std::time::Duration) -> String {
+    let minutes = elapsed.as_secs() / 60;
+    match minutes {
+        0 => "just now".to_owned(),
+        1..60 => format!("{minutes} min ago"),
+        _ => format!("{} h ago", minutes / 60),
+    }
+}
+
 fn quiet_line(app: &App, ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
@@ -98,20 +158,55 @@ fn quiet_line(app: &App, ui: &mut egui::Ui, text: &str) {
     );
 }
 
-fn range_chips(app: &mut App, ui: &mut egui::Ui) {
+/// The ranges on the left and, once some plays came from elsewhere, a dropdown for where they
+/// were played. It sits at the row's right end, or after the ranges where they have to wrap.
+fn range_chips(app: &mut App, ui: &mut egui::Ui, elsewhere: bool) {
     let p = app.palette;
-    let mut picked = None;
-    ui.horizontal_wrapped(|ui| {
+    let (mut range_picked, mut scope_picked) = (None, None);
+    let mut ranges = |ui: &mut egui::Ui| {
         for range in StatsRange::ALL {
             if widgets::chip(ui, &p, &range.label(), app.stats_range == range).clicked() {
-                picked = Some(range);
+                range_picked = Some(range);
             }
         }
-    });
-    if let Some(range) = picked {
+    };
+    let scope = |ui: &mut egui::Ui| {
+        let labels = StatsScope::ALL.map(StatsScope::label);
+        widgets::plain_dropdown(
+            ui,
+            &p,
+            egui::Id::new("stats-scope"),
+            app.stats_scope.label(),
+            &labels,
+        )
+        .map(|i| StatsScope::ALL[i])
+    };
+    if !elsewhere {
+        ui.horizontal_wrapped(|ui| ranges(ui));
+    } else if ui.available_width() >= RANGE_CHIPS_W + SCOPE_DROPDOWN_W {
+        ui.horizontal(|ui| {
+            ranges(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                scope_picked = scope(ui);
+            });
+        });
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            ranges(ui);
+            scope_picked = scope(ui);
+        });
+    }
+    if let Some(range) = range_picked {
         app.set_stats_range(range);
     }
+    if let Some(scope) = scope_picked {
+        app.set_stats_scope(scope);
+    }
 }
+
+/// Room the range chips take on one line, and the scope dropdown beside them with a gap.
+const RANGE_CHIPS_W: f32 = 510.0;
+const SCOPE_DROPDOWN_W: f32 = 180.0;
 
 /// Offer an import once, in a strip at the top of the Stats page, while nothing has been imported.
 /// It stays until it's answered and isn't made again after that: Settings keeps the way to do it.
@@ -397,8 +492,8 @@ pub fn top_page(app: &mut App, ui: &mut egui::Ui, list: TopList) {
         return;
     };
     crate::ui::page_scroll(app, title).show(ui, |ui| {
-        page_title(ui, &app.palette, title);
-        range_chips(app, ui);
+        title_row(app, ui, title);
+        range_chips(app, ui, report.elsewhere);
         ui.add_space(12.0);
         let items = match list {
             TopList::Songs => &report.top_songs,
@@ -658,6 +753,14 @@ mod tests {
             CALENDAR_DAY_LABELS + grid <= inner + 0.5,
             "stays in its card"
         );
+    }
+
+    #[test]
+    fn a_check_reads_as_how_long_ago() {
+        use std::time::Duration;
+        assert_eq!(ago(Duration::from_secs(20)), "just now");
+        assert_eq!(ago(Duration::from_secs(185)), "3 min ago");
+        assert_eq!(ago(Duration::from_secs(2 * 3600 + 60)), "2 h ago");
     }
 
     #[test]

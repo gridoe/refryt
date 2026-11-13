@@ -1490,6 +1490,7 @@ pub struct App {
     listening: crate::play_log::Listening,
     /// The range the Stats page shows.
     pub(crate) stats_range: crate::listening_stats::StatsRange,
+    pub(crate) stats_scope: crate::listening_stats::StatsScope,
     /// What the Stats page shows. An older report stays up while a newer one is added up.
     pub(crate) stats_report: Option<Arc<crate::listening_stats::Report>>,
     pub(crate) stats_error: Option<String>,
@@ -1509,7 +1510,9 @@ pub struct App {
     pub(crate) takeout_importing: bool,
     /// When the account's history was last asked for.
     history_checked: Option<Instant>,
-    history_checking: bool,
+    pub(crate) history_checking: bool,
+    /// When the last check finished, and whether it worked, for the line on the Stats page.
+    pub(crate) history_done: Option<(Instant, bool)>,
     /// The history list changed too much to follow, so plays may be missing.
     pub(crate) history_gap: bool,
     /// Stats are off and the last history list has been dropped.
@@ -2183,6 +2186,7 @@ impl App {
             search_history: crate::search_history::load(),
             listening: Default::default(),
             stats_range: Default::default(),
+            stats_scope: Default::default(),
             stats_report: None,
             stats_error: None,
             stats_epoch: 0,
@@ -2194,6 +2198,7 @@ impl App {
             takeout_importing: false,
             history_checked: None,
             history_checking: false,
+            history_done: None,
             history_gap: false,
             history_forgotten: false,
             plays_during_import: Vec::new(),
@@ -5958,8 +5963,9 @@ impl App {
                 }
                 Event::StatsLoaded { .. } | Event::StatsFailed { .. } => {}
                 Event::TakeoutImported { result } => self.takeout_imported(result),
-                Event::HistoryChecked { found } => {
+                Event::HistoryChecked { found, ok } => {
                     self.history_checking = false;
+                    self.history_done = Some((Instant::now(), ok));
                     self.history_gap = found.gap;
                     for play in found.plays {
                         self.log_play(Some(play));
@@ -7722,13 +7728,22 @@ impl App {
         }
         self.stats_requested = Some(self.stats_epoch);
         self.backend
-            .load_listening_stats(self.stats_range, self.stats_epoch);
+            .load_listening_stats(self.stats_range, self.stats_scope, self.stats_epoch);
     }
 
     /// Show another range on the Stats page.
     pub(crate) fn set_stats_range(&mut self, range: crate::listening_stats::StatsRange) {
         if self.stats_range != range {
             self.stats_range = range;
+            self.stats_error = None;
+            self.stats_epoch += 1;
+        }
+    }
+
+    /// Count the plays from everywhere on the Stats page, or only the ones made here.
+    pub(crate) fn set_stats_scope(&mut self, scope: crate::listening_stats::StatsScope) {
+        if self.stats_scope != scope {
+            self.stats_scope = scope;
             self.stats_error = None;
             self.stats_epoch += 1;
         }
@@ -7795,6 +7810,15 @@ impl App {
             self.backend.check_history(self.history_channel());
         } else {
             ctx.request_repaint_after(due);
+        }
+    }
+
+    /// Look through the account's history now, from the Stats page's button. `history_step`
+    /// starts it on the next frame, as it would a check that has come due.
+    pub(crate) fn check_history_now(&mut self) {
+        if !self.history_checking {
+            self.history_checked = None;
+            self.ctx.request_repaint();
         }
     }
 

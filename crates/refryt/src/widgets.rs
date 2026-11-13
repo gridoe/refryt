@@ -4294,7 +4294,7 @@ pub fn icon_chip(ui: &mut Ui, palette: &Palette, icon: Icon, glyph: f32) -> egui
 pub fn swatch_chip(
     ui: &mut Ui,
     palette: &Palette,
-    swatch: Color32,
+    swatch: Option<Color32>,
     label: &str,
     selected: bool,
     chevron: bool,
@@ -4308,12 +4308,14 @@ pub fn swatch_chip(
     // to `painter.galley`, which is how a selected chip once painted its label invisibly.
     let galley =
         ui.fonts_mut(|f| f.layout_no_wrap(label.into_owned(), font.clone(), Color32::PLACEHOLDER));
-    const DOT: f32 = 9.0;
+    // No swatch, no dot: the label takes its place.
+    let dot = if swatch.is_some() { 9.0 } else { 0.0 };
     // A chevron rides 20pt past the label's last letter and needs its own room — a dropdown
     // whose arrow lands on its label is not a dropdown, it is a smudge.
     const CHEVRON: f32 = 20.0;
     let size = vec2(
-        galley.size().x + DOT + 34.0 + u8::from(chevron) as f32 * CHEVRON,
+        galley.size().x + dot + 34.0 - if swatch.is_some() { 0.0 } else { 8.0 }
+            + u8::from(chevron) as f32 * CHEVRON,
         32.0,
     );
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
@@ -4334,9 +4336,14 @@ pub fn swatch_chip(
             fill
         };
         ui.painter().rect_filled(rect, theme::pill(rect), fill);
-        let dot_center = rect.left_center() + vec2(16.0, 0.0);
-        ui.painter().circle_filled(dot_center, DOT / 2.0, swatch);
-        let text_pos = dot_center + vec2(DOT / 2.0 + 8.0, -galley.size().y / 2.0);
+        let text_pos = match swatch {
+            Some(swatch) => {
+                let dot_center = rect.left_center() + vec2(16.0, 0.0);
+                ui.painter().circle_filled(dot_center, dot / 2.0, swatch);
+                dot_center + vec2(dot / 2.0 + 8.0, -galley.size().y / 2.0)
+            }
+            None => rect.left_center() + vec2(16.0, -galley.size().y / 2.0),
+        };
         ui.painter()
             .galley(text_pos + press_offset(&response), galley, fg);
         if chevron {
@@ -4373,13 +4380,38 @@ pub fn dropdown(
     current: &str,
     options: &[(Color32, &str)],
 ) -> Option<usize> {
-    let response = swatch_chip(ui, palette, current_swatch, current, false, true);
+    let response = swatch_chip(ui, palette, Some(current_swatch), current, false, true);
+    dropdown_popup(ui, palette, id, &response, current, options)
+}
+
+/// A [`dropdown`] for a choice with no colour to show: the same pill and popup, without the
+/// swatches.
+pub fn plain_dropdown(
+    ui: &mut Ui,
+    palette: &Palette,
+    id: egui::Id,
+    current: &str,
+    options: &[&str],
+) -> Option<usize> {
+    let response = swatch_chip(ui, palette, None, current, false, true);
+    let options: Vec<(Option<Color32>, &str)> = options.iter().map(|o| (None, *o)).collect();
+    dropdown_popup(ui, palette, id, &response, current, &options)
+}
+
+fn dropdown_popup<S: Copy + Into<Option<Color32>>>(
+    ui: &mut Ui,
+    palette: &Palette,
+    id: egui::Id,
+    response: &egui::Response,
+    current: &str,
+    options: &[(S, &str)],
+) -> Option<usize> {
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
     let mut choice = None;
-    let popup = egui::Popup::from_response(&response)
+    let popup = egui::Popup::from_response(response)
         .id(id)
         .kind(egui::PopupKind::Menu)
         .frame(menu_frame(ui, palette))
@@ -4401,7 +4433,8 @@ pub fn dropdown(
             .max_height(320.0)
             .show(mui, |mui| {
                 for (i, (swatch, label)) in options.iter().enumerate() {
-                    let row = dropdown_row(mui, palette, *swatch, label, current == *label);
+                    let row =
+                        dropdown_row(mui, palette, (*swatch).into(), label, current == *label);
                     if row.clicked() {
                         choice = Some(i);
                         mui.close();
@@ -4416,7 +4449,7 @@ pub fn dropdown(
 fn dropdown_row(
     ui: &mut Ui,
     palette: &Palette,
-    swatch: Color32,
+    swatch: Option<Color32>,
     label: &str,
     selected: bool,
 ) -> egui::Response {
@@ -4431,16 +4464,25 @@ fn dropdown_row(
         }
         let fg = mix(palette.secondary, palette.text, t);
         let nudge = press_offset(&response);
-        ui.painter()
-            .circle_filled(rect.left_center() + vec2(18.0, 0.0) + nudge, 4.5, swatch);
+        let text_x = match swatch {
+            Some(swatch) => {
+                ui.painter().circle_filled(
+                    rect.left_center() + vec2(18.0, 0.0) + nudge,
+                    4.5,
+                    swatch,
+                );
+                32.0
+            }
+            None => 14.0,
+        };
         crate::emoji::paint_line(
             ui,
-            rect.left_center() + vec2(32.0, 0.0) + nudge,
+            rect.left_center() + vec2(text_x, 0.0) + nudge,
             &truncate_to(
                 ui,
                 label,
                 theme::medium(13.0),
-                (rect.width() - 32.0 - 24.0).max(0.0),
+                (rect.width() - text_x - 24.0).max(0.0),
             ),
             theme::medium(13.0),
             fg,

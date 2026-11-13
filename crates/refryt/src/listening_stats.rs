@@ -20,6 +20,30 @@ pub const TOP_LIMIT: usize = 50;
 /// How many months the plays-over-time chart will show before going by year.
 const MAX_MONTH_BARS: i64 = 36;
 
+/// Which plays a report counts: all of them, or only the ones played in this app on this computer.
+/// Takeout imports and the history check bring in the account's plays from anywhere.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatsScope {
+    #[default]
+    Everywhere,
+    Here,
+}
+
+impl StatsScope {
+    pub const ALL: [StatsScope; 2] = [StatsScope::Everywhere, StatsScope::Here];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            StatsScope::Everywhere => "Account",
+            StatsScope::Here => "On this computer",
+        }
+    }
+
+    fn counts(self, play: &Play) -> bool {
+        self == StatsScope::Everywhere || play.source == play_log::Source::App
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StatsRange {
     Today,
@@ -158,6 +182,9 @@ pub struct Report {
     pub logged: u64,
     /// Whether any of the log came from a Takeout export.
     pub imported: bool,
+    /// Whether any of the log was played somewhere other than here, which is when the scope
+    /// can be picked at all.
+    pub elsewhere: bool,
     pub plays: u64,
     pub seconds: u64,
     /// `seconds` is partly an estimate.
@@ -213,8 +240,10 @@ struct Builder<Tz: TimeZone> {
     since: Option<i64>,
     /// The same length of time before `since`.
     before: Option<i64>,
+    scope: StatsScope,
     logged: u64,
     imported: bool,
+    elsewhere: bool,
     current: Period,
     previous: Period,
     songs: HashMap<String, Tally>,
@@ -233,8 +262,10 @@ impl<Tz: TimeZone> Builder<Tz> {
             range,
             since,
             before,
+            scope: StatsScope::Everywhere,
             logged: 0,
             imported: false,
+            elsewhere: false,
             current: Period::default(),
             previous: Period::default(),
             songs: HashMap::new(),
@@ -247,6 +278,10 @@ impl<Tz: TimeZone> Builder<Tz> {
     fn add(&mut self, mut play: Play) {
         self.logged += 1;
         self.imported |= play.source == play_log::Source::Takeout;
+        self.elsewhere |= play.source != play_log::Source::App;
+        if !self.scope.counts(&play) {
+            return;
+        }
         if let Some(details) = self.details.get(&play.video_id) {
             play.apply(details);
         }
@@ -375,6 +410,7 @@ impl<Tz: TimeZone> Builder<Tz> {
             range: self.range,
             logged: self.logged,
             imported: self.imported,
+            elsewhere: self.elsewhere,
             plays: current.plays,
             seconds: current.seconds,
             seconds_estimated: current.estimated,
@@ -530,8 +566,9 @@ pub fn listening_time(seconds: u64) -> String {
 }
 
 /// The report for a range, from the log on disk. Slow enough to belong off the UI thread.
-pub fn load(range: StatsRange) -> Result<Report> {
+pub fn load(range: StatsRange, scope: StatsScope) -> Result<Report> {
     let mut builder = Builder::new(range, Local::now(), play_log::load_details());
+    builder.scope = scope;
     play_log::for_each(|play| builder.add(play))?;
     Ok(builder.finish())
 }
@@ -942,6 +979,31 @@ mod tests {
         assert_eq!(listening_time(3600), "1 h");
         assert_eq!(listening_time(5 * 3600 + 12 * 60), "5 h 12 min");
         assert_eq!(listening_time(212 * 3600 + 60), "212 h");
+    }
+
+    #[test]
+    fn on_this_computer_counts_only_the_plays_made_here() {
+        let mut elsewhere = play("Away", "B", now().timestamp() - 3_600);
+        elsewhere.source = Source::Poll;
+        let plays = vec![play("Here", "A", now().timestamp() - 7_200), elsewhere];
+        let mut builder = Builder::new(StatsRange::Week, now(), HashMap::new());
+        builder.scope = StatsScope::Here;
+        for p in plays.clone() {
+            builder.add(p);
+        }
+        let here = builder.finish();
+        assert_eq!((here.plays, here.logged), (1, 2));
+        assert!(here.elsewhere);
+        assert_eq!(report(StatsRange::Week, plays).plays, 2);
+    }
+
+    #[test]
+    fn a_log_from_here_alone_has_no_scope_to_pick() {
+        let only_here = report(
+            StatsRange::Week,
+            vec![play("Here", "A", now().timestamp() - 60)],
+        );
+        assert!(!only_here.elsewhere);
     }
 
     #[test]

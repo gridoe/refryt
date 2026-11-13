@@ -3202,7 +3202,7 @@ pub(crate) fn page_title(ui: &mut egui::Ui, palette: &theme::Palette, text: &str
 /// The room a [`page_title`] line leaves above its capitals: the line box's top to the cap line.
 /// Measured off a screenshot — ~4.6pt above the capitals of a 26pt Inter title, 0.18 em — and
 /// kept as that fraction so a new title size stays optically in place.
-const PAGE_TITLE_LEAD: f32 = theme::PAGE_TITLE_PT * 0.18;
+pub(crate) const PAGE_TITLE_LEAD: f32 = theme::PAGE_TITLE_PT * 0.18;
 
 /// A section heading, e.g. "Top songs" between blocks of a page.
 /// How a carousel offers the rest of its shelf.
