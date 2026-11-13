@@ -181,9 +181,15 @@ The 23 themes are CSS files in the config folder's `themes` folder, and can be e
 
 ### Casting from a phone
 
-With "Cast from YouTube Music" on in Settings, Integrations, the computer shows up in the Cast menu of the YouTube Music app on phones on the same network, next to the TVs and speakers. What the phone casts plays in refryt: its queue becomes refryt's queue, and play, pause, seek, skip and volume work from either side. The YouTube app can cast to it too, and plays as audio.
+With "Cast from YouTube Music" on in Settings, System, the computer shows up in the Cast menu of the YouTube Music app on phones on the same network, next to the TVs and speakers. What the phone casts plays in refryt: its queue becomes refryt's queue, and play, pause, seek, skip and volume work from either side. The YouTube app can cast to it too, and plays as audio.
 
-It is off by default. While it is on, refryt answers device discovery on the local network (UDP port 1900) and takes pairing requests on TCP port 47023, so a firewall has to let both in, and any device on the network can start playback, as with a TV or a Chromecast. Nothing is cast in the other direction: refryt is a receiver, not a remote for other devices.
+It is off by default. While it is on, refryt answers device discovery on the local network (UDP port 1900) and takes pairing requests on TCP port 47023, and any device on the network can start playback, as with a TV or a Chromecast. If another program already holds 47023, refryt pairs on a free port for that run instead, and the ? next to the setting shows which. Nothing is cast in the other direction: refryt is a receiver, not a remote for other devices.
+
+If the computer doesn't show up in the phone's Cast menu, a firewall is usually the reason. Both ports have to be let in:
+
+- **Linux** with ufw: `sudo ufw allow from 192.168.0.0/16 to any port 1900 proto udp` and `sudo ufw allow from 192.168.0.0/16 to any port 47023 proto tcp`, with your own network's range if it isn't `192.168.x.x`. With firewalld: `sudo firewall-cmd --permanent --add-port=1900/udp --add-port=47023/tcp` and `sudo firewall-cmd --reload`. The ? next to the setting has these ready to copy, for your network and port.
+- **Windows** asks once, the first time the setting is on, whether refryt may use the network. Allow it on private networks.
+- **macOS** may ask whether refryt may accept incoming connections. Allow it.
 
 ### Signing in
 

@@ -30,7 +30,7 @@ use tokio::sync::{mpsc, oneshot};
 
 /// The HTTP port. Fixed, so a firewall rule can name it; when something else holds it, any free
 /// port is used instead, and discovery still points the phone at it.
-pub(crate) const PORT: u16 = 47_023;
+pub const PORT: u16 = 47_023;
 
 const SSDP_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
 const SSDP_PORT: u16 = 1900;
@@ -44,6 +44,16 @@ const ANNOUNCE_EVERY: Duration = Duration::from_secs(600);
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// The most a request may carry. A launch body is a pairing code and a few flags.
 const MAX_REQUEST: usize = 8 * 1024;
+/// The most connections served at once. A phone opens one at a time; past this a connection is
+/// closed unread, so a flood of them cannot use up the app's file handles, which mpv and the
+/// network need too.
+const MAX_CONNECTIONS: usize = 16;
+/// The least time between two pairings. A phone pairs once per Cast tap; each pairing is a
+/// request to YouTube from this computer, which a flood must not turn into a stream of them.
+const LAUNCH_GAP: Duration = Duration::from_secs(1);
+/// The pause after the listener fails to accept, as it does with no file handles left: without
+/// it the loop would retry at once, and keep a core busy until one frees up.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(250);
 
 /// A phone asking to pair, handed to the receiver.
 pub(crate) struct Launch {
@@ -61,6 +71,23 @@ struct Shared {
     name: String,
     port: u16,
     launches: mpsc::UnboundedSender<Launch>,
+    /// Held for the length of a pairing, so only one runs at a time.
+    pairing: tokio::sync::Semaphore,
+    /// When the last pairing began.
+    last_launch: std::sync::Mutex<Option<std::time::Instant>>,
+}
+
+impl Shared {
+    fn new(uuid: String, name: String, port: u16, launches: mpsc::UnboundedSender<Launch>) -> Self {
+        Self {
+            uuid,
+            name,
+            port,
+            launches,
+            pairing: tokio::sync::Semaphore::new(1),
+            last_launch: std::sync::Mutex::new(None),
+        }
+    }
 }
 
 /// The two servers. Dropping this stops them; [`Dial::goodbye`] tells the network first.
@@ -96,16 +123,16 @@ impl Dial {
         };
         let port = listener.local_addr()?.port();
         let socket = ssdp_socket().context("could not listen for discovery on UDP 1900")?;
-        let shared = Arc::new(Shared {
-            uuid,
-            name,
-            port,
-            launches,
-        });
+        let shared = Arc::new(Shared::new(uuid, name, port, launches));
         let http = tokio::spawn(serve_http(listener, Arc::clone(&shared)));
         let ssdp = tokio::spawn(serve_ssdp(socket, Arc::clone(&shared)));
         tracing::info!(port, "cast: discoverable on the local network");
         Ok(Self { shared, http, ssdp })
+    }
+
+    /// The TCP port pairings come in on.
+    pub(crate) fn port(&self) -> u16 {
+        self.shared.port
     }
 
     /// Tell the network the device is leaving, so a phone drops it from its list now rather
@@ -283,8 +310,18 @@ fn http_date() -> String {
 }
 
 async fn serve_http(listener: TcpListener, shared: Arc<Shared>) {
+    let open = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
-        let Ok((socket, _)) = listener.accept().await else {
+        let socket = match listener.accept().await {
+            Ok((socket, _)) => socket,
+            Err(e) => {
+                tracing::debug!(error = %e, "cast: could not accept a connection");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+        };
+        let Ok(slot) = Arc::clone(&open).try_acquire_owned() else {
+            // Dropped unread: closed at once.
             continue;
         };
         let shared = Arc::clone(&shared);
@@ -292,8 +329,22 @@ async fn serve_http(listener: TcpListener, shared: Arc<Shared>) {
             if let Err(e) = serve(socket, &shared).await {
                 tracing::debug!(error = %format!("{e:#}"), "cast: a pairing request failed");
             }
+            drop(slot);
         });
     }
+}
+
+/// Whether a pairing may start now: none is under way, and the last began long enough ago.
+/// Returns the permit that marks this one as under way.
+fn may_pair(shared: &Shared) -> Option<tokio::sync::SemaphorePermit<'_>> {
+    let permit = shared.pairing.try_acquire().ok()?;
+    let mut last = shared.last_launch.lock().unwrap();
+    let now = std::time::Instant::now();
+    if last.is_some_and(|at| now.duration_since(at) < LAUNCH_GAP) {
+        return None;
+    }
+    *last = Some(now);
+    Some(permit)
 }
 
 #[derive(Debug, PartialEq)]
@@ -406,6 +457,10 @@ async fn respond(request: &Request, base: &str, shared: &Shared) -> String {
                 // A launch with no code is a phone that only wants the app in front, which it
                 // already is.
                 return launched(base);
+            };
+            let Some(_pairing) = may_pair(shared) else {
+                tracing::debug!("cast: a pairing came too soon after another, refused");
+                return plain(503, "Service Unavailable");
             };
             let (reply, registered) = oneshot::channel();
             let launch = Launch {
@@ -625,14 +680,26 @@ mod tests {
     }
 
     #[test]
+    fn pairings_go_one_at_a_time_and_not_too_close_together() {
+        let (launches, _keep) = mpsc::unbounded_channel();
+        let shared = Shared::new(UUID.to_owned(), "x".to_owned(), PORT, launches);
+        let first = may_pair(&shared);
+        assert!(first.is_some());
+        assert!(may_pair(&shared).is_none(), "one is under way");
+        drop(first);
+        assert!(
+            may_pair(&shared).is_none(),
+            "the last began under a second ago"
+        );
+        *shared.last_launch.lock().unwrap() =
+            Some(std::time::Instant::now() - LAUNCH_GAP - Duration::from_millis(10));
+        assert!(may_pair(&shared).is_some());
+    }
+
+    #[test]
     fn a_device_name_cannot_break_its_description() {
         let (launches, _keep) = mpsc::unbounded_channel();
-        let shared = Shared {
-            uuid: UUID.to_owned(),
-            name: "Rock & <Roll>".to_owned(),
-            port: PORT,
-            launches,
-        };
+        let shared = Shared::new(UUID.to_owned(), "Rock & <Roll>".to_owned(), PORT, launches);
         let xml = device_description("http://192.168.1.5:47023", &shared);
         assert!(xml.contains("<friendlyName>Rock &amp; &lt;Roll&gt;</friendlyName>"));
         assert!(xml.contains(&format!("<UDN>uuid:{UUID}</UDN>")));

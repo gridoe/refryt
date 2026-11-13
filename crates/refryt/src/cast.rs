@@ -20,7 +20,7 @@
 //! and exists only while its setting is on. Unlike it, this listens on the network, which is
 //! why the setting is off until someone turns it on.
 
-mod dial;
+pub(crate) mod dial;
 mod lounge;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -190,8 +190,9 @@ pub enum Status {
     Off,
     /// Binding its screen with YouTube.
     Connecting,
-    /// Listed in the Cast menu.
-    Ready,
+    /// Listed in the Cast menu, taking pairings on this TCP port: [`dial::PORT`] unless
+    /// something else held it.
+    Ready { port: u16 },
     /// Not listed, and why. It keeps trying.
     Failed(String),
 }
@@ -636,8 +637,9 @@ impl Receiver {
         match dial::Dial::start(self.store.uuid.clone(), self.name.clone(), launches.clone()).await
         {
             Ok(dial) => {
+                let port = dial.port();
                 self.dial = Some(dial);
-                self.set_status(Status::Ready);
+                self.set_status(Status::Ready { port });
             }
             Err(e) => {
                 let error = format!("{e:#}");
@@ -663,10 +665,12 @@ impl Receiver {
                     tokio::task::spawn_blocking(move || store.save());
                 }
                 if theme == Theme::Music {
-                    if self.dial.is_none() {
-                        self.start_dial(launches).await;
-                    } else {
-                        self.set_status(Status::Ready);
+                    match &self.dial {
+                        None => self.start_dial(launches).await,
+                        Some(dial) => {
+                            let port = dial.port();
+                            self.set_status(Status::Ready { port });
+                        }
                     }
                 }
                 // Launches that arrived while the screen was binding.

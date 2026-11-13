@@ -958,16 +958,16 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
     let mut lrclib = app.settings.lrclib_lyrics;
     let mut cast = app.settings.cast_receiver;
     let cast_detail = cast_detail(app);
+    let cast_port = match app.cast_status {
+        crate::cast::Status::Ready { port } => port,
+        _ => crate::cast::dial::PORT,
+    };
     widgets::setting_group(ui, &p, Some("Integrations"), |ui, g| {
-        toggle_row(
-            g,
-            ui,
-            &p,
-            "setting-cast",
-            "Cast from YouTube Music",
-            &cast_detail,
-            &mut cast,
-        );
+        g.row(ui, "Cast from YouTube Music", &cast_detail, |ui| {
+            widgets::toggle(ui, &p, ui.id().with("setting-cast"), &mut cast);
+            ui.add_space(4.0);
+            cast_help(ui, &p, cast_port);
+        });
         toggle_row(
             g,
             ui,
@@ -1001,6 +1001,166 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+const CAST_HELP_WIDTH: f32 = 440.0;
+
+/// A `?` beside the cast switch: how a phone finds this computer, and what a firewall has to let
+/// in for it to. A computer that never shows up in the phone's Cast menu gives no other clue.
+fn cast_help(ui: &mut egui::Ui, p: &theme::Palette, port: u16) {
+    let button = widgets::icon_button(ui, p, Icon::CircleHelp, 16.0, false)
+        .hint("If your computer doesn't show up");
+    egui::Popup::new(
+        ui.id().with("cast-help"),
+        ui.ctx().clone(),
+        &button,
+        ui.layer_id(),
+    )
+    .kind(egui::PopupKind::Menu)
+    .frame(widgets::menu_frame(ui, p))
+    .width(CAST_HELP_WIDTH)
+    .gap(4.0)
+    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+    .open_memory(button.clicked().then_some(egui::SetOpenCommand::Toggle))
+    .show(|ui| {
+        ui.set_width(CAST_HELP_WIDTH);
+        let heading = |ui: &mut egui::Ui, text: &str| {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(text)
+                    .font(theme::semibold(13.0))
+                    .color(p.text),
+            );
+            ui.add_space(2.0);
+        };
+        let line = |ui: &mut egui::Ui, text: &str| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(text)
+                        .font(theme::regular(12.0))
+                        .color(p.secondary),
+                )
+                .wrap(),
+            );
+        };
+        heading(ui, "Casting from your phone");
+        line(
+            ui,
+            "Put the phone on the same network as this computer, open YouTube Music, \
+             tap Cast and pick this computer.",
+        );
+        heading(ui, "If it doesn't show up");
+        line(
+            ui,
+            &format!(
+                "The phone finds this computer on UDP port 1900 and pairs on TCP port {port}. \
+                 A firewall has to let both in."
+            ),
+        );
+        if port != crate::cast::dial::PORT {
+            line(
+                ui,
+                &format!(
+                    "Port {} was in use, so this run pairs on {port}. A firewall rule for {} \
+                     doesn't cover it.",
+                    crate::cast::dial::PORT,
+                    crate::cast::dial::PORT
+                ),
+            );
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let from = local_range().map_or(String::new(), |r| format!("from {r} "));
+            ui.add_space(4.0);
+            line(ui, "With ufw:");
+            command(
+                ui,
+                p,
+                "cast-ufw",
+                &format!(
+                    "sudo ufw allow {from}to any port 1900 proto udp\n\
+                     sudo ufw allow {from}to any port {port} proto tcp"
+                ),
+            );
+            line(ui, "With firewalld:");
+            command(
+                ui,
+                p,
+                "cast-firewalld",
+                &format!(
+                    "sudo firewall-cmd --permanent --add-port=1900/udp\n\
+                     sudo firewall-cmd --permanent --add-port={port}/tcp\n\
+                     sudo firewall-cmd --reload"
+                ),
+            );
+        }
+        #[cfg(target_os = "windows")]
+        line(
+            ui,
+            "The first time this is on, Windows asks whether refryt may use the network. Allow \
+             it on private networks. If you said no, allow refryt under Windows Security, \
+             Firewall & network protection, Allow an app through firewall.",
+        );
+        #[cfg(target_os = "macos")]
+        line(
+            ui,
+            "macOS may ask whether refryt may accept incoming connections. Allow it. If you \
+             said no, allow it under System Settings, Network, Firewall, Options.",
+        );
+        ui.add_space(2.0);
+    });
+}
+
+/// Commands to paste into a terminal, in a box with a Copy button.
+#[cfg(target_os = "linux")]
+fn command(ui: &mut egui::Ui, p: &theme::Palette, id: &str, text: &str) {
+    let copied_id = ui.id().with((id, "copied"));
+    let copied_at: Option<f64> = ui.data(|d| d.get_temp(copied_id));
+    let now = ui.input(|i| i.time);
+    egui::Frame::new()
+        .fill(p.window)
+        .corner_radius(egui::CornerRadius::same(theme::radii().item))
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(text)
+                        .font(egui::FontId::monospace(11.0))
+                        .color(p.text),
+                )
+                .wrap(),
+            );
+            ui.add_space(2.0);
+            let recent = copied_at.is_some_and(|at| now - at < 2.0);
+            let label = if recent { "Copied" } else { "Copy" };
+            if widgets::outline_button(ui, p, label).clicked() {
+                ui.ctx().copy_text(text.to_owned());
+                ui.data_mut(|d| d.insert_temp(copied_id, now));
+            }
+            if recent {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(500));
+            }
+        });
+    ui.add_space(4.0);
+}
+
+/// The private range this computer's network address is in, for a firewall rule that lets in
+/// only this network. Asks the system which address it would send from, without sending.
+#[cfg(target_os = "linux")]
+fn local_range() -> Option<&'static str> {
+    let socket = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    socket.connect(("239.255.255.250", 1900)).ok()?;
+    let std::net::IpAddr::V4(ip) = socket.local_addr().ok()?.ip() else {
+        return None;
+    };
+    match ip.octets() {
+        [192, 168, ..] => Some("192.168.0.0/16"),
+        [10, ..] => Some("10.0.0.0/8"),
+        [172, b, ..] if (16..32).contains(&b) => Some("172.16.0.0/12"),
+        _ => None,
+    }
+}
+
 /// What the cast receiver's row says under its title: what the switch does while it is off,
 /// and where the receiver stands while it is on, since a device that does not show up in the
 /// phone's menu gives no other sign of why.
@@ -1015,7 +1175,7 @@ fn cast_detail(app: &App) -> String {
         return format!("Casting from {phone}.");
     }
     match &app.cast_status {
-        Status::Ready => format!("In the Cast menu as “{name}”."),
+        Status::Ready { .. } => format!("In the Cast menu as “{name}”."),
         Status::Failed(error) => format!("Not in the Cast menu yet: {error}. Still trying."),
         Status::Off | Status::Connecting => "Connecting to YouTube…".to_owned(),
     }
