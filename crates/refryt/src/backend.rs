@@ -509,6 +509,8 @@ pub enum Event {
     },
     /// The cast receiver has something to say: a phone connected, or asked for something.
     Cast(crate::cast::CastEvent),
+    /// The network the computer is on changed, or was looked at for the first time.
+    Network(Option<crate::network::Network>),
     /// Cover art finished decoding on a worker; the UI thread uploads it as a texture.
     ImageReady(Box<images::Loaded>),
     /// The URL and the size that was asked for — the cache keys on both.
@@ -2850,6 +2852,27 @@ impl Backend {
         crate::cast::Cast::spawn(self.rt.handle(), Arc::clone(&self.api), move |event| {
             Self::emit(&tx, &ctx, Event::Cast(event));
         })
+    }
+
+    /// Watch which network the computer is on, for the settings that hold per network: says it
+    /// once now and again on every change. Checked every 20 seconds, which is how long a
+    /// receiver may stay up on a network it should not be on.
+    pub fn watch_network(&self) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.rt.spawn(async move {
+            let mut last: Option<Option<crate::network::Network>> = None;
+            loop {
+                let now = tokio::task::spawn_blocking(crate::network::current)
+                    .await
+                    .unwrap_or(None);
+                if last.as_ref() != Some(&now) {
+                    tracing::debug!(network = ?now.as_ref().map(|n| &n.name), "network changed");
+                    last = Some(now.clone());
+                    Self::emit(&tx, &ctx, Event::Network(now));
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+            }
+        });
     }
 
     /// Take everything that finished since the last frame. Never blocks.

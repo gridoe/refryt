@@ -183,7 +183,9 @@ The 23 themes are CSS files in the config folder's `themes` folder, and can be e
 
 With "Cast from YouTube Music" on in Settings, System, the computer shows up in the Cast menu of the YouTube Music app on phones on the same network, next to the TVs and speakers. What the phone casts plays in refryt: its queue becomes refryt's queue, and play, pause, seek, skip and volume work from either side. The YouTube app can cast to it too, and plays as audio.
 
-It is off by default. While it is on, refryt answers device discovery on the local network (UDP port 1900) and takes pairing requests on TCP port 47023, and any device on the network can start playback, as with a TV or a Chromecast. If another program already holds 47023, refryt pairs on a free port for that run instead, and the ? next to the setting shows which. Nothing is cast in the other direction: refryt is a receiver, not a remote for other devices.
+It is off by default, and it is on or off per network. Switched on, it comes back on by itself whenever the computer is on that network again; on any other, such as public Wi-Fi, it stays off and the computer doesn't show up until you switch it on there too. Networks are told apart by their router, so this works on a cable as on Wi-Fi, and a hotspot named like your Wi-Fi doesn't count as it. The other networks it's on for are listed under the setting and can be removed.
+
+While it runs, refryt answers device discovery on the local network (UDP port 1900) and takes pairing requests on TCP port 47023, and any device on the network can start playback, as with a TV or a Chromecast. If another program already holds 47023, refryt pairs on a free port for that run instead, and the ? next to the setting shows which. Nothing is cast in the other direction: refryt is a receiver, not a remote for other devices.
 
 If the computer doesn't show up in the phone's Cast menu, a firewall is usually the reason. Both ports have to be let in:
 

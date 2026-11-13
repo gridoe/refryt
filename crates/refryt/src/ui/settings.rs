@@ -956,8 +956,20 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
     // application (the id is fixed in `crate::discord`), so the toggle is the whole setting.
     let mut discord = app.settings.discord_rich_presence;
     let mut lrclib = app.settings.lrclib_lyrics;
-    let mut cast = app.settings.cast_receiver;
+    // The switch is casting on the network the computer is on: on, it is allowed here; off,
+    // it is not, and any other network allowed stays so.
+    let on_here = app.settings.cast_receiver && app.cast_allowed_here();
+    let mut cast = on_here;
     let cast_detail = cast_detail(app);
+    let here = app.current_network().cloned();
+    let others: Vec<crate::settings::CastNetwork> = app
+        .settings
+        .cast_networks
+        .iter()
+        .filter(|n| here.as_ref().is_none_or(|h| h.id != n.id))
+        .cloned()
+        .collect();
+    let mut forget: Option<String> = None;
     let cast_port = match app.cast_status {
         crate::cast::Status::Ready { port } => port,
         _ => crate::cast::dial::PORT,
@@ -968,6 +980,19 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(4.0);
             cast_help(ui, &p, cast_port);
         });
+        // The other networks it runs on: one row each, to take back from anywhere.
+        for network in &others {
+            g.row(
+                ui,
+                &network.name,
+                "Casting is on when you're on this network.",
+                |ui| {
+                    if widgets::outline_button(ui, &p, "Remove").clicked() {
+                        forget = Some(network.id.clone());
+                    }
+                },
+            );
+        }
         toggle_row(
             g,
             ui,
@@ -997,11 +1022,16 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
         s.hide_tray_on_close = hide_tray;
         s.discord_rich_presence = discord;
         s.lrclib_lyrics = lrclib;
-        s.cast_receiver = cast;
     });
+    if cast != on_here {
+        app.set_cast_here(&ctx, cast);
+    }
+    if let Some(id) = forget {
+        app.forget_cast_network(&ctx, &id);
+    }
 }
 
-const CAST_HELP_WIDTH: f32 = 440.0;
+const CAST_HELP_WIDTH: f32 = 480.0;
 
 /// A `?` beside the cast switch: how a phone finds this computer, and what a firewall has to let
 /// in for it to. A computer that never shows up in the phone's Cast menu gives no other clue.
@@ -1046,6 +1076,12 @@ fn cast_help(ui: &mut egui::Ui, p: &theme::Palette, port: u16) {
             ui,
             "Put the phone on the same network as this computer, open YouTube Music, \
              tap Cast and pick this computer.",
+        );
+        line(
+            ui,
+            "It's on per network: switched on here, it comes back on by itself whenever you're \
+             on this network again, and stays off on any other, such as public Wi-Fi, until \
+             you switch it on there too.",
         );
         heading(ui, "If it doesn't show up");
         line(
@@ -1121,21 +1157,35 @@ fn command(ui: &mut egui::Ui, p: &theme::Palette, id: &str, text: &str) {
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(text)
-                        .font(egui::FontId::monospace(11.0))
-                        .color(p.text),
-                )
-                .wrap(),
-            );
-            ui.add_space(2.0);
             let recent = copied_at.is_some_and(|at| now - at < 2.0);
-            let label = if recent { "Copied" } else { "Copy" };
-            if widgets::outline_button(ui, p, label).clicked() {
-                ui.ctx().copy_text(text.to_owned());
-                ui.data_mut(|d| d.insert_temp(copied_id, now));
-            }
+            ui.horizontal_top(|ui| {
+                let text_w = (ui.available_width() - 30.0).max(0.0);
+                ui.allocate_ui(egui::vec2(text_w, 0.0), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(text)
+                                .font(egui::FontId::monospace(11.0))
+                                .color(p.text),
+                        )
+                        .wrap(),
+                    );
+                });
+                // At the box's right edge, however short the lines.
+                ui.add_space((ui.available_width() - 26.0).max(0.0));
+                // A tick for a moment once copied.
+                let (icon, hint) = if recent {
+                    (Icon::Check, "Copied")
+                } else {
+                    (Icon::Copy, "Copy")
+                };
+                if widgets::icon_button(ui, p, icon, 14.0, false)
+                    .hint(hint)
+                    .clicked()
+                {
+                    ui.ctx().copy_text(text.to_owned());
+                    ui.data_mut(|d| d.insert_temp(copied_id, now));
+                }
+            });
             if recent {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(500));
@@ -1167,9 +1217,17 @@ fn local_range() -> Option<&'static str> {
 fn cast_detail(app: &App) -> String {
     use crate::cast::Status;
     let Some(name) = app.cast_name() else {
-        return "Lists this computer in the Cast menu of YouTube Music on phones on the same \
-                network."
-            .to_owned();
+        return match &app.network {
+            Some(Some(here)) if crate::network::SUPPORTED => format!(
+                "Lists this computer in the Cast menu of YouTube Music on phones on this \
+                 network ({}).",
+                here.name
+            ),
+            Some(None) if crate::network::SUPPORTED => "Not on a network.".to_owned(),
+            _ => "Lists this computer in the Cast menu of YouTube Music on phones on the same \
+                  network."
+                .to_owned(),
+        };
     };
     if let Some(phone) = app.cast_senders.first() {
         return format!("Casting from {phone}.");

@@ -1950,6 +1950,9 @@ pub struct App {
     pub(crate) cast_status: crate::cast::Status,
     /// The phones casting here, by name.
     pub(crate) cast_senders: Vec<String>,
+    /// The network the computer is on, once looked at (see `crate::network`). `None` inside
+    /// before the first look; `Some(None)` with no network.
+    pub(crate) network: Option<Option<crate::network::Network>>,
     /// What the receiver was last told is playing, and when: it is told again only once a phone
     /// shown that would be showing something wrong.
     cast_told: Option<(crate::cast::Snapshot, Instant)>,
@@ -2380,6 +2383,7 @@ impl App {
             cast: None,
             cast_status: crate::cast::Status::Off,
             cast_senders: Vec::new(),
+            network: None,
             cast_told: None,
             cast_seek: None,
             load_issued: false,
@@ -2407,8 +2411,12 @@ impl App {
         // Start the presence here too, not only from a Settings change: a launch with the setting
         // already on should show up without the user having to toggle it off and back on.
         app.sync_discord();
-        // The same for the cast receiver.
-        app.sync_cast();
+        // The same for the cast receiver, once the network it runs on is known.
+        if crate::network::SUPPORTED {
+            app.backend.watch_network();
+        } else {
+            app.sync_cast();
+        }
         // Heal the autostart entry an earlier version left behind — a stale path, or one without
         // the `--autostart` flag this version's startup request needs — and drop one the setting
         // no longer wants. The Settings toggle writes it directly; this is the once-a-launch
@@ -2697,7 +2705,9 @@ impl App {
         if self.settings.discord_rich_presence != before.discord_rich_presence {
             self.sync_discord();
         }
-        if self.settings.cast_receiver != before.cast_receiver {
+        if self.settings.cast_receiver != before.cast_receiver
+            || self.settings.cast_networks != before.cast_networks
+        {
             self.sync_cast();
         }
         if let Err(e) = crate::settings::save(&self.settings) {
@@ -3126,17 +3136,82 @@ impl App {
         self.presence_key = None;
     }
 
-    /// Start or stop the cast receiver to match the setting. Called on a Settings change and
-    /// once at launch, like [`Self::sync_discord`].
+    /// Start or stop the cast receiver to match the setting and the network. Called on a
+    /// Settings change, on a change of network, and once at launch.
     pub(crate) fn sync_cast(&mut self) {
-        self.cast = self
-            .settings
-            .cast_receiver
-            .then(|| self.backend.start_cast());
+        let wanted = self.settings.cast_receiver && self.cast_allowed_here();
+        if wanted == self.cast.is_some() {
+            return;
+        }
+        self.cast = wanted.then(|| self.backend.start_cast());
         // A new receiver has been told nothing, and nobody is on it yet.
         self.cast_told = None;
         self.cast_senders.clear();
         self.cast_status = crate::cast::Status::Off;
+    }
+
+    /// Whether casting may run on the network the computer is on: one the user allowed. Where
+    /// the system cannot say which network it is on, the setting alone decides.
+    pub(crate) fn cast_allowed_here(&self) -> bool {
+        if !crate::network::SUPPORTED {
+            return true;
+        }
+        let Some(Some(here)) = &self.network else {
+            return false;
+        };
+        self.settings.cast_networks.iter().any(|n| n.id == here.id)
+    }
+
+    /// The network the computer is on, when known.
+    pub(crate) fn current_network(&self) -> Option<&crate::network::Network> {
+        self.network.as_ref().and_then(Option::as_ref)
+    }
+
+    /// The cast switch: casting on or off on the network the computer is on. Other networks
+    /// allowed stay as they are. Where the system cannot say which network it is on, it is the
+    /// plain setting.
+    pub(crate) fn set_cast_here(&mut self, ctx: &egui::Context, on: bool) {
+        let here = self.current_network().cloned();
+        self.update_settings(ctx, |s| {
+            let Some(here) = here.filter(|_| crate::network::SUPPORTED) else {
+                s.cast_receiver = on;
+                return;
+            };
+            if on {
+                s.cast_receiver = true;
+                if !s.cast_networks.iter().any(|n| n.id == here.id) {
+                    s.cast_networks.push(crate::settings::CastNetwork {
+                        id: here.id,
+                        name: here.name,
+                    });
+                }
+            } else {
+                s.cast_networks.retain(|n| n.id != here.id);
+            }
+        });
+    }
+
+    /// Stop allowing casting on a network.
+    pub(crate) fn forget_cast_network(&mut self, ctx: &egui::Context, id: &str) {
+        self.update_settings(ctx, |s| s.cast_networks.retain(|n| n.id != id));
+    }
+
+    fn on_network(&mut self, network: Option<crate::network::Network>) {
+        self.network = Some(network);
+        // The name can change under the same router (a renamed Wi-Fi): keep the list's current.
+        if let Some(here) = self.current_network().cloned()
+            && let Some(kept) = self
+                .settings
+                .cast_networks
+                .iter_mut()
+                .find(|n| n.id == here.id && n.name != here.name)
+        {
+            kept.name = here.name;
+            if let Err(e) = crate::settings::save(&self.settings) {
+                tracing::warn!(error = %format!("{e:#}"), "could not save settings");
+            }
+        }
+        self.sync_cast();
     }
 
     /// The name phones list this computer under, while the receiver is on.
@@ -6181,6 +6256,7 @@ impl App {
                 }
                 Event::Playing(..) => {}
                 Event::Cast(event) => self.on_cast_event(event),
+                Event::Network(network) => self.on_network(network),
                 // A mix card's own play (`play_playlist`), seeded with the mix's id: only the
                 // card clicked last may start, as for `CardTracksReady`.
                 Event::MixLoaded { seed, .. }

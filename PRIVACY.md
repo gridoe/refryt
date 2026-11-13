@@ -34,8 +34,11 @@ play. Turn it off with "Check for updates" in Settings, About.
 default. refryt talks to the Discord app on your computer, which then shows what you are
 playing to people who can see your profile.
 
-**Phones on your network**, only if "Cast from YouTube Music" is on in Settings, Integrations.
-It is off by default. refryt then answers device discovery on the local network with its name
+**Phones on your network**, only if "Cast from YouTube Music" is on in Settings, Integrations,
+and only on networks you allowed. It is off by default. To tell networks apart, refryt reads
+your router's hardware address from the system every 20 seconds while running, and on Linux
+asks NetworkManager for the connection's name. The settings file keeps a hash of the address
+and that name for each allowed network; nothing about it leaves the computer. refryt then answers device discovery on the local network with its name
 ("Refryt" and the computer's hostname) and accepts pairing requests from devices on it. The
 connection to a paired phone runs through YouTube (youtube.com), which is told the same name
 and what is playing so the phone can show it. A phone that is signed in sends YouTube its own

@@ -124,10 +124,14 @@ tao = "0.37"
 # `-UI_WindowsAndMessaging` are `open_url`'s `ShellExecuteW`. `-Graphics_Dwm`, `-Graphics_Gdi` and
 # `-UI_Controls` are `blur.rs`: the acrylic backdrop, the rounded corners, and the black
 # redirection surface that lets the transparent shell show the desktop.
+# `-NetworkManagement_IpHelper` and `-Networking_WinSock` are `network.rs`: the default gateway
+# and its hardware address, which tell one network from another for the cast setting.
 windows-sys = { version = "=0.52.0", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_System_Registry",
     "Win32_System_Threading",

@@ -51,6 +51,7 @@ pub const WEBSITE: &str = "https://github.com/gridoe/refryt";
 #[cfg(target_os = "macos")]
 pub mod menu_bar;
 pub mod model;
+pub mod network;
 pub mod pacing;
 pub mod persist;
 pub mod play_log;
