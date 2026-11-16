@@ -444,7 +444,12 @@ async fn fetch_range(
                 let Some(mirrored) = crate::mirror_url(&url, &node) else {
                     continue;
                 };
-                if let Ok(answered) = get(mirrored.clone()).await {
+                // A mirror that answers 5xx is no better than the dead node; 403/410 stay
+                // usable so the expiry path below still re-resolves.
+                if let Ok(answered) = get(mirrored.clone()).await
+                    && (answered.status().is_success()
+                        || matches!(answered.status().as_u16(), 403 | 410))
+                {
                     tracing::info!(
                         id = %entry.id,
                         host = mirrored.host_str().unwrap_or_default(),
