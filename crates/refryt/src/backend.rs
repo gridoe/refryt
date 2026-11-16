@@ -1003,12 +1003,11 @@ impl Backend {
         let api = Arc::new(Api::new()?);
         // One pool for the guest `player` requests and the stream ranges after them, kept warm
         // between tracks: a new connection to the stream host costs ~1.3 s before the first byte,
-        // a pooled one ~0.7 s for a whole MiB (measured 2026-09-23). Connects are capped well
-        // inside mpv's 5 s network timeout, so a dead node fails over to an `mn=` mirror in the
-        // proxy before mpv gives up on the song.
+        // a pooled one ~0.7 s for a whole MiB (measured 2026-09-23). Media deadlines live in
+        // the first-byte probe and proxy sends, leaving guest player requests their own
+        // request allowance.
         let stream_http = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .connect_timeout(std::time::Duration::from_secs(2))
             .build()
             .map_err(|e| anyhow::anyhow!("could not build the stream client: {e}"))?;
         let mut guest = refryt_resolve::GuestResolver::new(stream_http.clone());
@@ -2628,10 +2627,10 @@ impl Backend {
                     // A ranged stream plays through the proxy, and was probed — and, if its
                     // host would not talk, mirrored — at resolve time. yt-dlp's URLs go to
                     // mpv directly, so they get the same first-byte check here: without it,
-                    // a cache node that will not take a connection costs mpv a full network
-                    // timeout per track instead of being routed to a mirror up front. When
-                    // even the mirrors will not talk, mpv tries the URL anyway; its shorter
-                    // network timeout bounds what that can cost.
+                    // a cache node that will not take a connection delays playback instead
+                    // of being routed to a mirror up front. Probe and proxy sends have their
+                    // own deadlines; mpv's optional curl cap covers connection setup only.
+                    // When even the mirrors will not talk, mpv tries the URL anyway.
                     if !stream.needs_ranged
                         && let Err(e) =
                             refryt_resolve::probe_first_byte(&http, &mut stream.url).await
@@ -2641,6 +2640,9 @@ impl Backend {
                             error = %format!("{e:#}"),
                             "stream host unreachable; letting mpv try the URL anyway"
                         );
+                    }
+                    if scrobble.generation.load(Ordering::SeqCst) != generation {
+                        return;
                     }
                     let url = playable_url(proxy.as_deref(), &id, &stream);
                     match player::load(

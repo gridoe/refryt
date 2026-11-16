@@ -352,6 +352,206 @@ pub async fn probe_first_byte(http: &reqwest::Client, url: &mut Url) -> Result<(
 mod tests {
     use super::*;
 
+    /// Local upstreams keep googlevideo hostnames without changing process-wide DNS or proxies.
+    pub(crate) mod mirror_fixture {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use url::Url;
+
+        pub(crate) const PRIMARY: &str = "rr1---sn-primary.googlevideo.com";
+        pub(crate) const FAILED: &str = "rr1---sn-failed.googlevideo.com";
+        pub(crate) const REFUSED: &str = "rr1---sn-refused.googlevideo.com";
+        pub(crate) const LIVE: &str = "rr1---sn-live.googlevideo.com";
+        pub(crate) const FRESH: &str = "rr1---sn-fresh.googlevideo.com";
+
+        #[derive(Debug)]
+        pub(crate) struct Request {
+            pub(crate) host: String,
+            pub(crate) target: String,
+        }
+
+        pub(crate) struct MirrorHost {
+            addr: std::net::SocketAddr,
+            pub(crate) http: reqwest::Client,
+            held: Arc<Mutex<Vec<tokio::net::TcpStream>>>,
+            stop: Option<tokio::sync::oneshot::Sender<()>>,
+            task: tokio::task::JoinHandle<Vec<Request>>,
+        }
+
+        impl MirrorHost {
+            /// `None` closes after reading the request, before sending any HTTP response.
+            pub(crate) async fn start(
+                routes: &[(&'static str, Option<u16>)],
+                data: Arc<Vec<u8>>,
+            ) -> Self {
+                Self::start_inner(routes, data, false).await
+            }
+
+            /// Keep primary sockets open without headers while serving the live mirror normally.
+            pub(crate) async fn start_hanging_primary(data: Arc<Vec<u8>>) -> Self {
+                Self::start_inner(&[(PRIMARY, None), (LIVE, Some(206))], data, true).await
+            }
+
+            async fn start_inner(
+                routes: &[(&'static str, Option<u16>)],
+                data: Arc<Vec<u8>>,
+                hold_primary: bool,
+            ) -> Self {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let mut client = reqwest::Client::builder().no_proxy();
+                for (host, _) in routes {
+                    client = client.resolve(host, addr);
+                }
+                let http = client.build().unwrap();
+                let routes: HashMap<_, _> = routes.iter().copied().collect();
+                let (stop, mut stopped) = tokio::sync::oneshot::channel();
+                let held = Arc::new(Mutex::new(Vec::new()));
+                let held_by_task = Arc::clone(&held);
+                let task = tokio::spawn(async move {
+                    let mut seen = Vec::new();
+                    loop {
+                        let (mut socket, _) = tokio::select! {
+                            _ = &mut stopped => break,
+                            accepted = listener.accept() => accepted.unwrap(),
+                        };
+                        let mut bytes = Vec::new();
+                        let mut buf = [0u8; 1024];
+                        while !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                            let n = socket.read(&mut buf).await.unwrap();
+                            assert_ne!(n, 0, "upstream request ended before its headers");
+                            bytes.extend_from_slice(&buf[..n]);
+                            assert!(bytes.len() <= 16 * 1024, "upstream headers too large");
+                        }
+                        let text = String::from_utf8(bytes).unwrap();
+                        let header = |name: &str| {
+                            text.lines()
+                                .find_map(|line| {
+                                    let (key, value) = line.split_once(':')?;
+                                    key.eq_ignore_ascii_case(name)
+                                        .then(|| value.trim().to_owned())
+                                })
+                                .unwrap()
+                        };
+                        let host = header("host").split(':').next().unwrap().to_owned();
+                        let range = header("range");
+                        let target = text.split_whitespace().nth(1).unwrap().to_owned();
+                        let status = *routes.get(host.as_str()).expect("unexpected upstream host");
+                        let hold = hold_primary && host == PRIMARY;
+                        seen.push(Request { host, target });
+                        if hold {
+                            // Do not await this socket: mirrors must be accepted while it hangs.
+                            held_by_task.lock().unwrap().push(socket);
+                            continue;
+                        }
+                        let Some(status) = status else {
+                            continue;
+                        };
+                        let body = if status == 206 {
+                            let (start, end) = range
+                                .strip_prefix("bytes=")
+                                .unwrap()
+                                .split_once('-')
+                                .unwrap();
+                            &data[start.parse::<usize>().unwrap()..=end.parse::<usize>().unwrap()]
+                        } else {
+                            &[][..]
+                        };
+                        let mut reply = format!(
+                            "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        ).into_bytes();
+                        reply.extend_from_slice(body);
+                        socket.write_all(&reply).await.unwrap();
+                    }
+                    seen
+                });
+                Self {
+                    addr,
+                    http,
+                    held,
+                    stop: Some(stop),
+                    task,
+                }
+            }
+
+            pub(crate) fn url(&self, host: &str, query: &str) -> Url {
+                Url::parse(&format!(
+                    "http://{host}:{}/videoplayback?{query}",
+                    self.addr.port()
+                ))
+                .unwrap()
+            }
+
+            pub(crate) fn held_connections(&self) -> usize {
+                self.held.lock().unwrap().len()
+            }
+
+            pub(crate) async fn finish(mut self) -> Vec<Request> {
+                self.stop.take().unwrap().send(()).unwrap();
+                (&mut self.task).await.unwrap()
+            }
+        }
+
+        impl Drop for MirrorHost {
+            fn drop(&mut self) {
+                // Also clean up when a test panics or its outer timeout cancels finish().
+                self.task.abort();
+                self.held.lock().unwrap().clear();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_recovers_on_a_live_mirror_without_changing_the_signed_query() {
+        use mirror_fixture::{LIVE, MirrorHost, PRIMARY, REFUSED};
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let host = MirrorHost::start(
+                &[(PRIMARY, None), (REFUSED, Some(403)), (LIVE, Some(206))],
+                std::sync::Arc::new(vec![42]),
+            ).await;
+            let query = "itag=251&mn=sn-primary%2Csn-refused%2Csn-live&mvi=1&sig=A%2fb%2BC%3D&n=a+b&dup=1&dup=2";
+            let mut url = host.url(PRIMARY, query);
+            probe_first_byte(&host.http, &mut url).await.unwrap();
+            assert_eq!(url, host.url(LIVE, query));
+
+            let seen = host.finish().await;
+            assert_eq!(
+                seen.iter().map(|r| r.host.as_str()).collect::<Vec<_>>(),
+                [PRIMARY, REFUSED, LIVE]
+            );
+            for request in seen {
+                assert_eq!(request.target, format!("/videoplayback?{query}"));
+            }
+        }).await.expect("mirror probe did not finish");
+    }
+
+    #[tokio::test]
+    async fn probe_does_not_hide_primary_expiry_by_trying_a_mirror() {
+        use mirror_fixture::{LIVE, MirrorHost, PRIMARY};
+        tokio::time::timeout(Duration::from_secs(10), async {
+            for status in [403, 410] {
+                let host = MirrorHost::start(
+                    &[(PRIMARY, Some(status)), (LIVE, Some(206))],
+                    std::sync::Arc::new(vec![42]),
+                )
+                .await;
+                let original = host.url(PRIMARY, "mn=sn-primary,sn-live&sig=expired");
+                let mut url = original.clone();
+                let error = probe_first_byte(&host.http, &mut url).await.unwrap_err();
+                assert!(error.to_string().contains(&status.to_string()), "{error:#}");
+                assert_eq!(url, original);
+                let seen = host.finish().await;
+                assert_eq!(seen.len(), 1, "{seen:?}");
+                assert_eq!(seen[0].host, PRIMARY);
+            }
+        })
+        .await
+        .expect("expiry probe did not finish");
+    }
+
     #[test]
     fn video_id_validates() {
         assert!(VideoId::new("dQw4w9WgXcQ").is_ok());
