@@ -414,8 +414,11 @@ impl StreamProxy {
     }
 }
 
-/// One upstream range. A refusal that means the URL has lapsed re-resolves the video and tries
-/// the same range once more.
+/// One upstream range. A refusal that means the URL has lapsed re-resolves the video and
+/// tries the same range once more; a host that will not take the connection at all is
+/// failover, not expiry, so the range is retried on the next node in `mn=` and the entry
+/// kept on the one that answers — the remaining ranges then reuse that host without paying
+/// for the dead node again.
 async fn fetch_range(
     http: &reqwest::Client,
     refresh: &Refresh,
@@ -431,7 +434,33 @@ async fn fetch_range(
             .send()
     };
     let url = entry.url.lock().unwrap().clone();
-    let mut response = get(url).await.context("cannot reach the stream host")?;
+    let mut response = match get(url.clone()).await {
+        Ok(response) => response,
+        Err(e) => {
+            // Only a connect failure: an HTTP refusal is the URL, not the host, and is
+            // handled below.
+            let mut reached = Err(e);
+            for node in crate::mn_mirrors(&url) {
+                let Some(mirrored) = crate::mirror_url(&url, &node) else {
+                    continue;
+                };
+                if let Ok(answered) = get(mirrored.clone()).await {
+                    tracing::info!(
+                        id = %entry.id,
+                        host = mirrored.host_str().unwrap_or_default(),
+                        "stream proxy: host unreachable; reading from a mirror"
+                    );
+                    *entry.url.lock().unwrap() = mirrored;
+                    reached = Ok(answered);
+                    break;
+                }
+            }
+            match reached {
+                Ok(response) => response,
+                Err(lost) => return Err(lost).context("cannot reach the stream host"),
+            }
+        }
+    };
     if matches!(response.status().as_u16(), 403 | 410) {
         tracing::info!(id = %entry.id, status = %response.status(), "stream proxy: URL lapsed; resolving again");
         let fresh = refresh(entry.id.clone()).await?;

@@ -68,7 +68,7 @@ pub struct GuestResolver {
     visitor: Mutex<Option<String>>,
     visitor_file: Option<PathBuf>,
     quality: Mutex<GuestQuality>,
-    /// Ask the stream for its first byte before handing it on; see [`Self::probe`].
+    /// Ask the stream for its first byte before handing it on; see [`crate::probe_first_byte`].
     probe: bool,
 }
 
@@ -125,26 +125,6 @@ impl GuestResolver {
             && let Err(e) = std::fs::write(path, visitor)
         {
             tracing::debug!(error = %e, "guest: could not save the visitor");
-        }
-    }
-
-    /// Ask the stream for its first byte, as the proxy will ask for its ranges. The media server
-    /// now and then refuses a URL `player` has just handed out; found here, the chain still
-    /// falls through to yt-dlp, where found in mpv the song would simply fail. The connection it
-    /// opens is the one the proxy's first range then reuses, as for the `player` request.
-    async fn probe(&self, url: &Url) -> Result<()> {
-        let response = self
-            .http
-            .get(url.as_str())
-            .header("Range", "bytes=0-0")
-            .header("User-Agent", GUEST_USER_AGENT)
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-            .context("the stream did not answer")?;
-        match response.status().as_u16() {
-            200 | 206 => Ok(()),
-            status => bail!("the stream answered {status}"),
         }
     }
 
@@ -213,10 +193,17 @@ impl StreamResolver for GuestResolver {
             );
         }
         let quality = self.quality.lock().map(|q| *q).unwrap_or_default();
-        let stream =
+        let mut stream =
             pick(&response, quality).with_context(|| format!("no direct audio stream for {id}"))?;
         if self.probe {
-            self.probe(&stream.url)
+            // The media server now and then hands out a URL its own host will not serve, or
+            // on a node this machine cannot reach; found here, the chain still falls through
+            // to yt-dlp, where found in mpv the song would simply fail. A dead node is
+            // healed in place by the mirror failover inside the probe — not a resolver
+            // failure, so the breaker must not hear of it when a mirror answers. The
+            // connection the probe opens is the one the proxy's first range then reuses, as
+            // for the `player` request.
+            crate::probe_first_byte(&self.http, &mut stream.url)
                 .await
                 .with_context(|| format!("guest stream for {id}"))?;
         }

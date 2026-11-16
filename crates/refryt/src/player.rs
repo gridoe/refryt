@@ -91,6 +91,12 @@ impl Player {
             // miss just re-reads from the network, which the forward cache already does past
             // its own edge. 4 MiB is a few minutes of Opus — plenty for a scrub-back.
             init.set_property("demuxer-max-back-bytes", "4MiB")?;
+            // An unreachable stream host should cost seconds, not mpv's own ~30 s before
+            // "Timeout was reached": YouTube's cache picker now and then assigns a node
+            // that will not answer at all, and the mirror failover in refryt-resolve only
+            // helps when the failure is noticed quickly. The loopback proxy answers in
+            // milliseconds, so the shorter timeout never bites a healthy stream.
+            init.set_property("network-timeout", "5")?;
             // We resolve stream URLs ourselves via refryt-resolve, so mpv must not invoke
             // yt-dlp for them — direct `googlevideo.com` URLs never match ytdl_hook's
             // `youtube.com` patterns, so enabling the hook costs nothing there. The in-app

@@ -257,6 +257,97 @@ pub async fn probe_throughput(stream: &AudioStream, want_bytes: u64) -> Result<(
     Ok((total, started.elapsed()))
 }
 
+/// The mirror nodes a googlevideo URL offers instead of the one its host points at, in the
+/// order `mn=` lists them. The node the host is on is the list's first entry — `mvi` is the
+/// `rrN` host index, *not* a position in this list (measured 2026-11-16: a URL on
+/// `rr1---sn-8pxuuxahv1-h2hz` with `mvi=1` and `mn=sn-8pxuuxahv1-h2hz,sn-8xgp1vo-ab5s`) —
+/// so the mirrors are the entries the host's own node does not name. Empty when the URL
+/// names no mirrors: localhost test servers, non-googlevideo hosts, a list of one.
+fn mn_mirrors(url: &Url) -> Vec<String> {
+    let Some(nodes) = url.query_pairs().find(|(k, _)| k == "mn").map(|(_, v)| v) else {
+        return Vec::new();
+    };
+    let on = url
+        .host_str()
+        .unwrap_or_default()
+        .split_once("---")
+        .map(|(_, node)| node.trim_end_matches(".googlevideo.com"));
+    nodes
+        .split(',')
+        .map(str::to_owned)
+        .filter(|node| Some(node.as_str()) != on)
+        .collect()
+}
+
+/// Rebuild a googlevideo URL on `node`, one of the cache nodes its `mn=` names: same path,
+/// query and `rrN` prefix, with only the node between the host's dashes swapped. The
+/// signature travels in the query and is not tied to the host, so nothing else changes.
+/// `None` when the host is not the `rrN---<node>.googlevideo.com` shape.
+fn mirror_url(url: &Url, node: &str) -> Option<Url> {
+    let host = url.host_str()?;
+    if !host.ends_with(".googlevideo.com") {
+        return None;
+    }
+    let (prefix, _) = host.split_once("---")?;
+    let mut mirrored = url.clone();
+    mirrored
+        .set_host(Some(&format!("{prefix}---{node}.googlevideo.com")))
+        .ok()?;
+    Some(mirrored)
+}
+
+/// Ask a stream host for its first byte, and fail over to a mirror node when it will not
+/// take the connection.
+///
+/// YouTube's cache picker now and then assigns a node a client cannot reach at all — the
+/// TCP connection neither answers nor refuses, for tens of seconds (measured 2026-11-16:
+/// both `player` and yt-dlp kept handing out URLs on a node that did this from one
+/// address). The URL itself names the nodes YouTube had in mind, so the fix needs no
+/// second resolve: see [`mn_mirrors`] and [`mirror_url`]. The probe walks that list and
+/// rewrites `url` in place onto the first node that answers, which the caller then plays;
+/// the connection it opens is pooled in `http`, so the stream's first real range reuses it.
+/// A host that *answers* is another matter — a 403 or 410 is the URL expiring, which no
+/// node fixes — so an HTTP status is an error, never a failover.
+pub async fn probe_first_byte(http: &reqwest::Client, url: &mut Url) -> Result<()> {
+    let get = |url: &Url| {
+        http.get(url.as_str())
+            .header("Range", "bytes=0-0")
+            .header("User-Agent", guest::GUEST_USER_AGENT)
+            // Short, so a dead node costs seconds: the mirrors are tried while the caller
+            // is still waiting for a URL worth playing.
+            .timeout(Duration::from_secs(5))
+            .send()
+    };
+    let response = match get(url).await {
+        Ok(response) => response,
+        Err(lost) => {
+            for node in mn_mirrors(url) {
+                let Some(mirrored) = mirror_url(url, &node) else {
+                    continue;
+                };
+                match get(&mirrored).await {
+                    Ok(answered) if matches!(answered.status().as_u16(), 200 | 206) => {
+                        tracing::info!(
+                            host = mirrored.host_str().unwrap_or_default(),
+                            "stream host unreachable; playing from a mirror"
+                        );
+                        *url = mirrored;
+                        return Ok(());
+                    }
+                    // A mirror that refuses the URL or will not answer is no better than
+                    // the node we came from; try the next.
+                    Ok(_) | Err(_) => continue,
+                }
+            }
+            return Err(lost).context("the stream did not answer");
+        }
+    };
+    match response.status().as_u16() {
+        200 | 206 => Ok(()),
+        status => bail!("the stream answered {status}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,6 +358,36 @@ mod tests {
         assert!(VideoId::new("short").is_err());
         assert!(VideoId::new("has spaces!").is_err());
         assert!(VideoId::new("waytoolongvideoid").is_err());
+    }
+
+    /// A mirror is the same URL on the next node in `mn=` — host rebuilt, everything else
+    /// (path, query, signature) intact — and a URL with no `mn=` has no mirror to rebuild on.
+    #[test]
+    fn a_mirror_is_the_same_url_on_the_next_node() {
+        let primary = Url::parse(
+            "https://rr1---sn-8pxuuxahv1-h2hz.googlevideo.com/videoplayback?\
+             itag=251&mn=sn-8pxuuxahv1-h2hz,sn-8xgp1vo-ab56&mvi=0&sig=ABCD",
+        )
+        .unwrap();
+        let mirrored = mirror_url(&primary, "sn-8xgp1vo-ab56").unwrap();
+        assert_eq!(
+            mirrored.host_str(),
+            Some("rr1---sn-8xgp1vo-ab56.googlevideo.com")
+        );
+        assert_eq!(mirrored.path(), "/videoplayback");
+        assert_eq!(mirrored.query(), primary.query());
+        assert_eq!(mn_mirrors(&primary), vec!["sn-8xgp1vo-ab56".to_owned()]);
+        // A URL already playing from the second node mirrors back to the first, whichever
+        // way `mvi` points.
+        let on_second = mirror_url(&primary, "sn-8xgp1vo-ab56").unwrap();
+        assert_eq!(
+            mn_mirrors(&on_second),
+            vec!["sn-8pxuuxahv1-h2hz".to_owned()]
+        );
+
+        let plain = Url::parse("https://rr1.googlevideo.com/videoplayback?itag=251").unwrap();
+        assert_eq!(mn_mirrors(&plain), Vec::<String>::new());
+        assert!(mirror_url(&plain, "sn-8xgp1vo-ab56").is_none());
     }
 
     #[test]
