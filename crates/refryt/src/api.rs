@@ -44,7 +44,30 @@ use crate::model::{self, Track, parse_duration};
 ///
 /// It also matters that this is a *default* header: the crate sets `User-Agent`, `X-Origin` and
 /// `Content-Type` per request, and those would override anything we passed the same way.
+///
+/// A default header only fills a gap, though, and a signed-in request has its own `Cookie`: the
+/// session's, which replaces this one whole. [`signed_in_cookie`] carries it over into that.
 const CONSENT_COOKIE: &str = "SOCS=CAI";
+
+/// The session's cookie as every signed-in request sends it: [`auth::for_token`]'s order, with
+/// [`CONSENT_COOKIE`] added when the session has no consent cookie of its own.
+///
+/// A pasted cookie often has none. While the session is good YouTube does not ask, but once Google
+/// lets it lapse an EU request without one is sent to `consent.youtube.com`, and `ytmapi-rs` says
+/// only "Error parsing header". That failed before the stale session could be renewed from its
+/// source, so a window session that only needed a quiet refresh asked to sign in again instead.
+fn signed_in_cookie(cookie: &str) -> String {
+    let cookie = auth::for_token(cookie);
+    let has_consent = cookie.split(';').any(|p| {
+        p.split_once('=')
+            .is_some_and(|(n, _)| matches!(n.trim(), "SOCS" | "CONSENT"))
+    });
+    if has_consent || cookie.is_empty() {
+        cookie
+    } else {
+        format!("{cookie}; {CONSENT_COOKIE}")
+    }
+}
 
 /// Build the HTTP client `ytmapi-rs` will use.
 /// Build the HTTP client, optionally browsing as a brand account.
@@ -184,7 +207,7 @@ impl Api {
             return Ok(false);
         };
         let http = self.http().await;
-        let token = match BrowserToken::from_str(&auth::for_token(&cookie), &http).await {
+        let token = match BrowserToken::from_str(&signed_in_cookie(&cookie), &http).await {
             Ok(token) => token,
             // Building the token is a request of its own, so with no connection it fails too —
             // and that is no reason to tell someone offline that their sign-in is gone.
@@ -293,7 +316,7 @@ impl Api {
         auth::validate_cookie(&cookie)?;
 
         let http = self.http().await;
-        let token = match BrowserToken::from_str(&auth::for_token(&cookie), &http).await {
+        let token = match BrowserToken::from_str(&signed_in_cookie(&cookie), &http).await {
             Ok(token) => token,
             Err(e) => {
                 let seen = refused_page(&e, &cookie).await;
@@ -2550,7 +2573,7 @@ async fn refused_page(error: &ytmapi_rs::Error, cookie: &str) -> Option<Refusal>
     let response = client
         .get("https://music.youtube.com")
         .header(reqwest::header::USER_AGENT, AGENT)
-        .header(reqwest::header::COOKIE, auth::for_token(cookie))
+        .header(reqwest::header::COOKIE, signed_in_cookie(cookie))
         .send()
         .await
         .inspect_err(|e| tracing::warn!(error = %e, "could not look at the refused page"))
@@ -3110,6 +3133,26 @@ fn map_playlist_song(s: PlaylistSong) -> Track {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session's own `Cookie` replaces the client's default one, so the consent cookie has to
+    /// travel inside it — and a session that answered consent itself keeps its own answer.
+    #[test]
+    fn a_signed_in_cookie_carries_consent() {
+        assert_eq!(
+            signed_in_cookie("HSID=h; SAPISID=a"),
+            "SAPISID=a; HSID=h; SOCS=CAI"
+        );
+        assert_eq!(
+            signed_in_cookie("SAPISID=a; SOCS=CAESNmine"),
+            "SAPISID=a; SOCS=CAESNmine"
+        );
+        assert_eq!(
+            signed_in_cookie("SAPISID=a; CONSENT=YES+1"),
+            "SAPISID=a; CONSENT=YES+1"
+        );
+        // Only the consent cookie's own name counts, not one that merely contains it.
+        assert!(signed_in_cookie("SAPISID=a; __Secure-SOCS=x").ends_with("; SOCS=CAI"));
+    }
 
     /// A refused sign-in names what YouTube showed instead of its music page.
     #[test]
