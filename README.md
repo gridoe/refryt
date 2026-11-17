@@ -190,7 +190,7 @@ While it runs, refryt answers device discovery on the local network (UDP port 19
 If the computer doesn't show up in the phone's Cast menu, a firewall is usually the reason. Both ports have to be let in:
 
 - **Linux** with ufw: `sudo ufw allow from 192.168.0.0/16 to any port 1900 proto udp` and `sudo ufw allow from 192.168.0.0/16 to any port 47023 proto tcp`, with your own network's range if it isn't `192.168.x.x`. With firewalld: `sudo firewall-cmd --permanent --add-port=1900/udp --add-port=47023/tcp` and `sudo firewall-cmd --reload`. The ? next to the setting has these ready to copy, for your network and port.
-- **Windows** asks once, the first time the setting is on, whether refryt may use the network. Allow it on private networks.
+- **Windows** Firewall needs a rule for refryt, including on a network Windows calls Public, and its own "allow access" prompt doesn't always leave one. The ? next to the setting has PowerShell commands ready to copy, for this copy of refryt and your network's range, to run as administrator.
 - **macOS** may ask whether refryt may accept incoming connections. Allow it.
 
 ### Signing in
