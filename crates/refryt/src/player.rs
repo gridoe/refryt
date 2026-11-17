@@ -92,8 +92,10 @@ impl Player {
             // its own edge. 4 MiB is a few minutes of Opus — plenty for a scrub-back.
             init.set_property("demuxer-max-back-bytes", "4MiB")?;
             // Bound connection establishment only; body reads keep their normal tolerance
-            // for buffered proxy streams. Older mpv builds without curl lack this option.
-            let _ = init.set_property("curl-connect-timeout", "5");
+            // for buffered proxy streams. Only mpv built with libcurl has this option (0.42
+            // and later, and the Windows libmpv); its default is 30 s per dead stream host.
+            // Others ignore it. It only matters for URLs mpv opens itself, not the proxy's.
+            let _ = init.set_property("curl-connect-timeout", "6");
             // We resolve stream URLs ourselves via refryt-resolve, so mpv must not invoke
             // yt-dlp for them — direct `googlevideo.com` URLs never match ytdl_hook's
             // `youtube.com` patterns, so enabling the hook costs nothing there. The in-app

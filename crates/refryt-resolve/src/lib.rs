@@ -296,6 +296,12 @@ fn mirror_url(url: &Url, node: &str) -> Option<Url> {
     Some(mirrored)
 }
 
+/// How long a stream host gets to send its response headers, connection included, before
+/// it counts as unreachable and a mirror is tried: for [`probe_first_byte`] and for each
+/// range the proxy fetches. A reachable host answers in well under a second (0.06–0.75 s
+/// measured 2026-11-17, cold), and a dead one should cost little more than this.
+pub(crate) const STREAM_DEADLINE: Duration = Duration::from_secs(6);
+
 /// Ask a stream host for its first byte, and fail over to a mirror node when it will not
 /// take the connection.
 ///
@@ -315,7 +321,7 @@ pub async fn probe_first_byte(http: &reqwest::Client, url: &mut Url) -> Result<(
             .header("User-Agent", guest::GUEST_USER_AGENT)
             // Short, so a dead node costs seconds: the mirrors are tried while the caller
             // is still waiting for a URL worth playing.
-            .timeout(Duration::from_secs(5))
+            .timeout(STREAM_DEADLINE)
             .send()
     };
     let response = match get(url).await {
