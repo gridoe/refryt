@@ -427,11 +427,12 @@ async fn fetch_range(
     end: u64,
 ) -> Result<Vec<u8>> {
     // Bound each attempt through response headers, including DNS/TCP/TLS and pooled
-    // connections. Leave body reads unbounded: a healthy 1 MiB range can take over 5 s.
+    // connections. Leave body reads unbounded: a healthy 1 MiB range can take longer
+    // than the deadline.
     let get = |url: Url| async move {
         Ok::<_, anyhow::Error>(
             tokio::time::timeout(
-                std::time::Duration::from_secs(5),
+                crate::STREAM_DEADLINE,
                 http.get(url)
                     .header("Range", format!("bytes={start}-{end}"))
                     .header("User-Agent", GUEST_USER_AGENT)
@@ -439,7 +440,12 @@ async fn fetch_range(
                     .send(),
             )
             .await
-            .context("the stream host did not answer within 5 seconds")??,
+            .with_context(|| {
+                format!(
+                    "the stream host did not answer within {} seconds",
+                    crate::STREAM_DEADLINE.as_secs()
+                )
+            })??,
         )
     };
     let url = entry.url.lock().unwrap().clone();
