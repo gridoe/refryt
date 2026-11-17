@@ -414,8 +414,11 @@ impl StreamProxy {
     }
 }
 
-/// One upstream range. A refusal that means the URL has lapsed re-resolves the video and tries
-/// the same range once more.
+/// One upstream range. A refusal that means the URL has lapsed re-resolves the video and
+/// tries the same range once more; a host that will not take the connection at all is
+/// failover, not expiry, so the range is retried on the next node in `mn=` and the entry
+/// kept on the one that answers — the remaining ranges then reuse that host without paying
+/// for the dead node again.
 async fn fetch_range(
     http: &reqwest::Client,
     refresh: &Refresh,
@@ -423,15 +426,55 @@ async fn fetch_range(
     start: u64,
     end: u64,
 ) -> Result<Vec<u8>> {
-    let get = |url: Url| {
-        http.get(url)
-            .header("Range", format!("bytes={start}-{end}"))
-            .header("User-Agent", GUEST_USER_AGENT)
-            .header("Accept-Encoding", "identity")
-            .send()
+    // Bound each attempt through response headers, including DNS/TCP/TLS and pooled
+    // connections. Leave body reads unbounded: a healthy 1 MiB range can take over 5 s.
+    let get = |url: Url| async move {
+        Ok::<_, anyhow::Error>(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                http.get(url)
+                    .header("Range", format!("bytes={start}-{end}"))
+                    .header("User-Agent", GUEST_USER_AGENT)
+                    .header("Accept-Encoding", "identity")
+                    .send(),
+            )
+            .await
+            .context("the stream host did not answer within 5 seconds")??,
+        )
     };
     let url = entry.url.lock().unwrap().clone();
-    let mut response = get(url).await.context("cannot reach the stream host")?;
+    let mut response = match get(url.clone()).await {
+        Ok(response) => response,
+        Err(e) => {
+            // Transport failures and the header deadline try mirrors; HTTP refusals are
+            // handled below.
+            let mut reached = Err(e);
+            for node in crate::mn_mirrors(&url) {
+                let Some(mirrored) = crate::mirror_url(&url, &node) else {
+                    continue;
+                };
+                // A mirror that answers 5xx is no better than the dead node; 403/410 stay
+                // usable so the expiry path below still re-resolves.
+                if let Ok(answered) = get(mirrored.clone()).await
+                    && (answered.status().is_success()
+                        || matches!(answered.status().as_u16(), 403 | 410))
+                {
+                    tracing::info!(
+                        id = %entry.id,
+                        host = mirrored.host_str().unwrap_or_default(),
+                        "stream proxy: host unreachable; reading from a mirror"
+                    );
+                    *entry.url.lock().unwrap() = mirrored;
+                    reached = Ok(answered);
+                    break;
+                }
+            }
+            match reached {
+                Ok(response) => response,
+                Err(lost) => return Err(lost).context("cannot reach the stream host"),
+            }
+        }
+    };
     if matches!(response.status().as_u16(), 403 | 410) {
         tracing::info!(id = %entry.id, status = %response.status(), "stream proxy: URL lapsed; resolving again");
         let fresh = refresh(entry.id.clone()).await?;
@@ -735,6 +778,176 @@ mod tests {
         let paths = paths.lock().unwrap();
         assert_eq!(paths[0], "/stale");
         assert!(paths[1..].iter().all(|p| p == "/fresh"), "{paths:?}");
+    }
+
+    #[tokio::test]
+    async fn proxy_skips_broken_mirrors_and_keeps_the_working_mirror_for_later_ranges() {
+        use crate::tests::mirror_fixture::{FAILED, LIVE, MirrorHost, PRIMARY, REFUSED};
+        use std::time::Duration;
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let body = data(300_000);
+            let host = MirrorHost::start(
+                &[
+                    (PRIMARY, None),
+                    (FAILED, None),
+                    (REFUSED, Some(503)),
+                    (LIVE, Some(206)),
+                ],
+                Arc::clone(&body),
+            )
+            .await;
+            let http = host.http.clone();
+            let proxy = StreamProxy::start(
+                &tokio::runtime::Handle::current(),
+                http.clone(),
+                no_refresh(),
+            )
+            .unwrap();
+            let upstream = host.url(
+                PRIMARY,
+                "mn=sn-primary,sn-failed,sn-refused,sn-live&sig=A%2Fb%2BC",
+            );
+            let url = proxy
+                .url_for(&id(), &stream(upstream.as_str(), body.len()))
+                .unwrap();
+
+            // The first seek spans several upstream reads; the second is a new player request.
+            for (start, end) in [(17_001, 180_019), (210_013, 220_091)] {
+                let response = http
+                    .get(url.clone())
+                    .header("Range", format!("bytes={start}-{end}"))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 206);
+                assert_eq!(
+                    response.headers()["content-range"].to_str().unwrap(),
+                    format!("bytes {start}-{end}/{}", body.len())
+                );
+                assert_eq!(response.bytes().await.unwrap().as_ref(), &body[start..=end]);
+            }
+
+            let seen = host.finish().await;
+            let hosts: Vec<_> = seen.iter().map(|r| r.host.as_str()).collect();
+            assert!(hosts.starts_with(&[PRIMARY, FAILED, REFUSED]), "{hosts:?}");
+            assert!(hosts.len() > 3, "{hosts:?}");
+            assert!(hosts[3..].iter().all(|host| *host == LIVE), "{hosts:?}");
+        })
+        .await
+        .expect("proxy mirror recovery did not finish");
+    }
+
+    /// Missing response headers must reach the mirror deadline, not a fixture-generated EOF.
+    #[tokio::test]
+    async fn proxy_recovers_when_the_primary_keeps_the_connection_open_without_headers() {
+        use crate::tests::mirror_fixture::{LIVE, MirrorHost, PRIMARY};
+        use std::time::Duration;
+
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let body = data(200_000);
+            let host = MirrorHost::start_hanging_primary(Arc::clone(&body)).await;
+            let proxy = StreamProxy::start(
+                &tokio::runtime::Handle::current(),
+                host.http.clone(),
+                no_refresh(),
+            )
+            .unwrap();
+            let upstream = host.url(PRIMARY, "mn=sn-primary,sn-live&sig=held-open");
+            let url = proxy
+                .url_for(&id(), &stream(upstream.as_str(), body.len()))
+                .unwrap();
+
+            let response = host
+                .http
+                .get(url)
+                .header("Range", "bytes=12345-16321")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 206);
+            assert_eq!(
+                response.bytes().await.unwrap().as_ref(),
+                &body[12_345..=16_321]
+            );
+            assert_eq!(
+                host.held_connections(),
+                1,
+                "the primary socket must stay open until explicit teardown"
+            );
+
+            let seen = host.finish().await;
+            assert_eq!(
+                seen.iter().map(|r| r.host.as_str()).collect::<Vec<_>>(),
+                [PRIMARY, LIVE]
+            );
+        })
+        .await
+        .expect("proxy did not recover from missing primary headers");
+    }
+
+    #[tokio::test]
+    async fn an_expired_mirror_refreshes_once_and_retries_the_players_exact_range() {
+        use crate::tests::mirror_fixture::{FRESH, LIVE, MirrorHost, PRIMARY, REFUSED};
+        use std::time::Duration;
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            for status in [403, 410] {
+                let body = data(200_000);
+                let host = MirrorHost::start(
+                    &[
+                        (PRIMARY, None),
+                        (REFUSED, Some(status)),
+                        (LIVE, Some(206)),
+                        (FRESH, Some(206)),
+                    ],
+                    Arc::clone(&body),
+                )
+                .await;
+                let refreshed = Arc::new(AtomicUsize::new(0));
+                let calls = Arc::clone(&refreshed);
+                let fresh = host.url(FRESH, "sig=fresh").to_string();
+                let length = body.len();
+                let refresh: Refresh = Arc::new(move |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    let fresh = fresh.clone();
+                    Box::pin(async move { Ok(stream(&fresh, length)) })
+                });
+                let http = host.http.clone();
+                let proxy =
+                    StreamProxy::start(&tokio::runtime::Handle::current(), http.clone(), refresh)
+                        .unwrap();
+                let upstream = host.url(PRIMARY, "mn=sn-primary,sn-refused,sn-live&sig=expired");
+                let url = proxy
+                    .url_for(&id(), &stream(upstream.as_str(), length))
+                    .unwrap();
+
+                let response = http
+                    .get(url)
+                    .header("Range", "bytes=12345-16321")
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status().as_u16(), 206);
+                assert_eq!(
+                    response.bytes().await.unwrap().as_ref(),
+                    &body[12_345..=16_321]
+                );
+                assert_eq!(
+                    refreshed.load(Ordering::SeqCst),
+                    1,
+                    "mirror status {status}"
+                );
+                let seen = host.finish().await;
+                assert_eq!(
+                    seen.iter().map(|r| r.host.as_str()).collect::<Vec<_>>(),
+                    [PRIMARY, REFUSED, FRESH],
+                    "mirror status {status}"
+                );
+            }
+        })
+        .await
+        .expect("mirror expiry refresh did not finish");
     }
 
     fn spans(list: &[(u64, u64)]) -> Vec<(u64, u64)> {

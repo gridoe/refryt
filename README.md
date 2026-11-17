@@ -207,6 +207,8 @@ There is no telemetry. refryt connects to YouTube, [LRCLIB](https://lrclib.net) 
 
 The project is before 1.0 and changes quickly. Only the Linux builds see daily use; the Windows builds are cross-compiled with limited testing on real hardware, and the macOS build has been tested by hand. Podcasts are not supported. A change to YouTube's internal API can break playback or a page until a fix is released.
 
+If an assigned YouTube stream host is unreachable, refryt retries alternate nodes listed in the stream URL.
+
 Bugs go to the [issue tracker](https://github.com/gridoe/refryt/issues); [CONTRIBUTING.md](CONTRIBUTING.md) says what to include.
 
 ## Build from source

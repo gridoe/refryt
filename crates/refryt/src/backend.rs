@@ -1003,7 +1003,9 @@ impl Backend {
         let api = Arc::new(Api::new()?);
         // One pool for the guest `player` requests and the stream ranges after them, kept warm
         // between tracks: a new connection to the stream host costs ~1.3 s before the first byte,
-        // a pooled one ~0.7 s for a whole MiB (measured 2026-09-23).
+        // a pooled one ~0.7 s for a whole MiB (measured 2026-09-23). Media deadlines live in
+        // the first-byte probe and proxy sends, leaving guest player requests their own
+        // request allowance.
         let stream_http = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(90))
             .build()
@@ -2485,11 +2487,12 @@ impl Backend {
     ) -> u64 {
         let downloads = Arc::clone(&self.downloads);
         let song_cache = Arc::clone(&self.song_cache);
-        let (resolver, api, tx, ctx) = (
+        let (resolver, api, tx, ctx, http) = (
             Arc::clone(&self.resolver),
             Arc::clone(&self.api),
             self.tx.clone(),
             self.ctx.clone(),
+            self.http.clone(),
         );
         // A new play supersedes any scrobble task still running for the old track, and — via the
         // `generation` stamped on every event below — any `Resolving`/`Playing`/`PlaybackFailed`
@@ -2619,8 +2622,28 @@ impl Backend {
 
             song_cache.note_alias(&track.video_id, id.as_str());
             let event = match resolver.resolve(&id).await {
-                Ok(stream) => {
+                Ok(mut stream) => {
                     song_cache.note_loudness(id.as_str(), stream.loudness_db);
+                    // A ranged stream plays through the proxy, and was probed — and, if its
+                    // host would not talk, mirrored — at resolve time. yt-dlp's URLs go to
+                    // mpv directly, so they get the same first-byte check here: without it,
+                    // a cache node that will not take a connection delays playback instead
+                    // of being routed to a mirror up front. Probe and proxy sends have their
+                    // own deadlines; mpv's optional curl cap covers connection setup only.
+                    // When even the mirrors will not talk, mpv tries the URL anyway.
+                    if !stream.needs_ranged
+                        && let Err(e) =
+                            refryt_resolve::probe_first_byte(&http, &mut stream.url).await
+                    {
+                        warn!(
+                            video_id = %track.video_id,
+                            error = %format!("{e:#}"),
+                            "stream host unreachable; letting mpv try the URL anyway"
+                        );
+                    }
+                    if scrobble.generation.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
                     let url = playable_url(proxy.as_deref(), &id, &stream);
                     match player::load(
                         &mpv,
