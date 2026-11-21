@@ -2788,38 +2788,31 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
                 );
             }
         } else if !narrow && let Some(n) = number {
+            // The numbers are right-aligned to this edge, so what takes a number's place ends
+            // there too: centred in the whole column it sat right of every number and reached
+            // into the gap before the title.
+            let number_right = rect.left() + left_inset + num_w - theme::ROW_NUMBER_GAP;
+            let glyph = 14.0;
+            let in_place = Rect::from_min_size(
+                egui::pos2(number_right - glyph, rect.center().y - glyph / 2.0),
+                vec2(glyph, glyph),
+            );
             if loading && hide_art {
-                paint_spinner(ui, number_rect.center(), 7.0, 2.0, palette.accent);
+                paint_spinner(ui, in_place.center(), 7.0, 2.0, palette.accent);
             } else if number_play && over {
                 // The cover's own hover play button went with the cover, so the affordance
                 // moves into the number's slot — the pointer turns the number into a play
                 // (or pause, on the row that is already going) glyph. Painted in the accent
                 // the cover's button used, so the two read as the same control.
-                let glyph = 14.0;
                 let icon = if playing {
                     Icon::PauseFilled
                 } else {
                     Icon::PlayFilled
                 };
-                // The play triangle's visual centre sits left of its bounding box; Pause is
-                // symmetric and needs no nudge.
-                let nudge = if playing { 0.0 } else { glyph * 0.06 };
-                icon.image(palette.accent, glyph).paint_at(
-                    ui,
-                    Rect::from_center_size(
-                        egui::pos2(
-                            rect.left() + left_inset + num_w / 2.0 + nudge,
-                            rect.center().y,
-                        ),
-                        vec2(glyph, glyph),
-                    ),
-                );
+                icon.image(palette.accent, glyph).paint_at(ui, in_place);
             } else {
                 ui.painter().text(
-                    egui::pos2(
-                        rect.left() + left_inset + num_w - theme::ROW_NUMBER_GAP,
-                        rect.center().y,
-                    ),
+                    egui::pos2(number_right, rect.center().y),
                     egui::Align2::RIGHT_CENTER,
                     n.to_string(),
                     theme::regular(12.0),
@@ -6684,10 +6677,14 @@ mod tests {
                         for entry in layer.all_entries() {
                             if let egui::Shape::Text(text) = &entry.shape {
                                 let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
-                                if rect.right()
-                                    <= hit.response.rect.left()
-                                        + crate::theme::ROW_LEFT_INSET
-                                        + crate::theme::ROW_NUMBER_W
+                                // The number itself, not any text there: with no image
+                                // loader in a test the play glyph paints as egui's "⚠"
+                                // in the same column.
+                                if text.galley.text() == "7"
+                                    && rect.right()
+                                        <= hit.response.rect.left()
+                                            + crate::theme::ROW_LEFT_INSET
+                                            + crate::theme::ROW_NUMBER_W
                                 {
                                     found += 1;
                                 }
