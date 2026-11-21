@@ -1442,6 +1442,10 @@ pub struct App {
     theme_watch: theme::custom::Watcher,
     /// The GTK colours, read off the UI thread (`theme::system`).
     gtk_watch: theme::system::GtkWatch,
+    /// Whether the GTK colours have been asked for since the window last came back into focus.
+    /// Reading them starts a child process (about 0.13 s of CPU), so it happens only when GTK is
+    /// the theme or Settings is where its name is offered.
+    gtk_fresh: bool,
     /// Whether the window had focus on the last frame, to notice it coming back.
     was_focused: bool,
     history: History,
@@ -2097,9 +2101,9 @@ impl App {
         theme::custom::seed();
         widgets::init_reduced_motion();
         let mut custom_themes = theme::custom::load();
-        // The desktop's themes. GTK takes a child process: waited for only when it is the theme
-        // about to paint, so the first frame isn't another theme's; otherwise read in the
-        // background once the app is up.
+        // The desktop's themes. GTK takes a child process: waited for when it is the theme about
+        // to paint, so the first frame isn't another theme's; otherwise read only once Settings
+        // offers it (`reload_custom_themes`).
         custom_themes.set_system(theme::system::QT, theme::system::qt().into_iter().collect());
         let gtk_now = [&settings.dark_theme, &settings.light_theme]
             .iter()
@@ -2178,6 +2182,7 @@ impl App {
             custom_themes,
             theme_watch,
             gtk_watch: theme::system::GtkWatch::default(),
+            gtk_fresh: gtk_now,
             was_focused: true,
             // Open on Home, as YouTube Music does — it is a real feed now rather than a page we
             // assembled. `--search` starts on Search, and `--page` overrides both.
@@ -2432,9 +2437,6 @@ impl App {
             local_browse_path: Vec::new(),
             local_playlists: crate::local_playlists::load(),
         };
-        if !gtk_now {
-            app.gtk_watch.refresh(&cc.egui_ctx);
-        }
         app.resync_local_playlists();
         if !app.settings.local_folders.is_empty() {
             app.local_scanning = true;
@@ -2640,13 +2642,18 @@ impl App {
         let mut themes = None;
         if focused && !self.was_focused {
             self.theme_watch.check();
-            // The desktop's theme may have changed meanwhile too.
-            self.gtk_watch.refresh(ctx);
+            // The desktop's theme may have changed meanwhile too. Qt's is two small files, read
+            // here; GTK's is read below, if it's wanted.
+            self.gtk_fresh = false;
             let mut t = self.custom_themes.clone();
             t.set_system(theme::system::QT, theme::system::qt().into_iter().collect());
             themes = Some(t);
         }
         self.was_focused = focused;
+        if !self.gtk_fresh && self.gtk_wanted() {
+            self.gtk_fresh = true;
+            self.gtk_watch.refresh(ctx);
+        }
         if let Some(gtk) = self.gtk_watch.take() {
             themes
                 .get_or_insert_with(|| self.custom_themes.clone())
@@ -2675,6 +2682,15 @@ impl App {
             self.palette = palette;
             theme::apply(ctx, &self.palette);
         }
+    }
+
+    /// Whether the GTK colours are needed: GTK is the theme in either mode, or Settings is open,
+    /// where it is offered.
+    fn gtk_wanted(&self) -> bool {
+        [&self.settings.dark_theme, &self.settings.light_theme]
+            .iter()
+            .any(|n| n.as_str() == theme::system::GTK)
+            || matches!(self.current_route(), Route::Settings)
     }
 
     pub(crate) fn update_settings(
