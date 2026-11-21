@@ -29,7 +29,6 @@ Google's privacy policy applies: <https://policies.google.com/privacy>.
 - **KuGou** (mobileservice.kugou.com, lyrics.kugou.com) gets the title, artist, album and
   length.
 - **Unison** (unison.boidu.dev) gets the title, artist, album and length.
-- **Genius** (genius.com) gets the title and artist.
 - **YouTube Music**, for its synced and plain lyrics, gets the video id. These requests are sent
   without your Google session.
 

@@ -11,7 +11,6 @@
 //! pick per song.
 
 pub mod better_lyrics;
-pub mod genius;
 pub mod kugou;
 pub mod lrc_red;
 pub mod lrclib;
@@ -55,13 +54,11 @@ pub enum Source {
     Unison,
     /// YouTube Music's lyrics as the website shows them: plain text, no timing.
     YouTube,
-    /// Genius: plain text from the biggest catalogue there is.
-    Genius,
 }
 
 impl Source {
     /// Every source, in the default order.
-    pub const ALL: [Source; 8] = [
+    pub const ALL: [Source; 7] = [
         Source::BetterLyrics,
         Source::LrcRed,
         Source::YouTubeSynced,
@@ -69,7 +66,6 @@ impl Source {
         Source::KuGou,
         Source::Unison,
         Source::YouTube,
-        Source::Genius,
     ];
 
     /// The name kept in the settings file.
@@ -81,7 +77,6 @@ impl Source {
             Source::KuGou => "kugou",
             Source::Unison => "unison",
             Source::YouTube => "youtube",
-            Source::Genius => "genius",
             Source::LrcRed => "lrc_red",
         }
     }
@@ -98,7 +93,6 @@ impl Source {
             Source::KuGou => "KuGou",
             Source::Unison => "Unison",
             Source::YouTube => "YouTube Music, plain",
-            Source::Genius => "Genius",
             Source::LrcRed => "lrc.red",
         }
     }
@@ -112,7 +106,6 @@ impl Source {
             Source::KuGou => "KuGou",
             Source::Unison => "Unison",
             Source::YouTube => "YouTube plain",
-            Source::Genius => "Genius",
             Source::LrcRed => "lrc.red",
         }
     }
@@ -142,9 +135,6 @@ impl Source {
             Source::Unison => {
                 "Lyrics added by listeners, for songs nobody licenses. Gets the title, artist, \
                  album and length."
-            }
-            Source::Genius => {
-                "Plain text, no timing, from the biggest catalogue. Gets the title and artist."
             }
         }
     }
@@ -397,7 +387,6 @@ pub async fn fetch(
         Source::LrcRed => lrc_red::lyrics(http, track).await,
         Source::KuGou => kugou::lyrics(http, track).await,
         Source::Unison => unison::lyrics(http, track).await,
-        Source::Genius => genius::lyrics(http, track).await,
     }?;
     if let Some(lyrics) = found.as_mut() {
         pair_romaji(lyrics);
@@ -718,20 +707,11 @@ mod tests {
                 (KuGou, true),
                 (Unison, true),
                 (YouTube, true),
-                (Genius, true),
             ]
         );
         assert_eq!(
             asked(&saved),
-            vec![
-                BetterLyrics,
-                LrcRed,
-                YouTubeSynced,
-                KuGou,
-                Unison,
-                YouTube,
-                Genius
-            ]
+            vec![BetterLyrics, LrcRed, YouTubeSynced, KuGou, Unison, YouTube]
         );
     }
 
