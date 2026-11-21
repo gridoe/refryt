@@ -71,6 +71,7 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
     app.lyrics_active = active;
 
     let synced = lyrics.synced;
+    let romanise = app.settings.lyrics_romanisation;
     let from = widgets::painted_so_far(ui);
     let output = area.show(ui, |ui| {
         // Inside the scroll: the title scrolls away with the lyrics rather than staying
@@ -90,11 +91,13 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
             } else {
                 theme::regular(14.0)
             };
-            let text = if line.text.is_empty() {
-                "♪"
-            } else {
-                &line.text
+            // With romanisation on, the romanised line leads and the original sits under it,
+            // smaller: the one most people read is the one that lights up.
+            let (lead, under) = match line.romanised.as_ref().filter(|_| romanise) {
+                Some(roman) => (roman.as_str(), Some(line.text.as_str())),
+                None => (line.text.as_str(), None),
             };
+            let text = if lead.is_empty() { "♪" } else { lead };
             // Laid out before the colour is known: a synced line lights up under the
             // pointer, which needs the row's rect first. The whole row is the target, so a
             // short line is as easy to hit as a long one.
@@ -104,13 +107,25 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
                 egui::Color32::PLACEHOLDER,
                 ui.available_width(),
             );
+            // The line in Latin letters, under it, when Apple gave one and it's wanted.
+            let roman = under.map(|r| {
+                ui.painter().layout(
+                    r.to_owned(),
+                    theme::regular(12.0),
+                    egui::Color32::PLACEHOLDER,
+                    ui.available_width(),
+                )
+            });
+            let roman_height = roman.as_ref().map_or(0.0, |r| r.size().y + 1.0);
             let sense = if synced {
                 egui::Sense::click()
             } else {
                 egui::Sense::hover()
             };
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), galley.size().y), sense);
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), galley.size().y + roman_height),
+                sense,
+            );
             let hovered = synced && response.hovered();
             if hovered {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -122,7 +137,15 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
             } else {
                 p.secondary
             };
+            let line_height = galley.size().y;
             ui.painter().galley(rect.min, galley, color);
+            if let Some(roman) = roman {
+                ui.painter().galley(
+                    rect.min + egui::vec2(0.0, line_height + 1.0),
+                    roman,
+                    color.gamma_multiply(0.6),
+                );
+            }
             if synced && response.clicked() {
                 clicked = Some(line.at_ms);
             }
@@ -171,10 +194,14 @@ pub(crate) fn picker(app: &App) -> Option<Picker> {
     };
     // Only sources that found lyrics: one with none, or still looking, isn't a choice. The
     // spinner says some are still out.
+    let romanise = app.settings.lyrics_romanisation;
     let options = app
         .lyrics_order
         .iter()
         .filter_map(|source| match app.lyrics_answers.get(source) {
+            Some(Answer::Found(l)) if l.synced && romanise && crate::lyrics::has_romanised(l) => {
+                Some((*source, format!("{} · romanised", source.short_label())))
+            }
             Some(Answer::Found(l)) if l.synced => Some((*source, source.short_label().to_owned())),
             Some(Answer::Found(_)) => {
                 Some((*source, format!("{} · no timing", source.short_label())))

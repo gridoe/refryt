@@ -54,6 +54,7 @@ pub fn parse_ttml(ttml: &str) -> Option<Lyrics> {
         .attributes()
         .any(|a| a.name() == "timing" && a.value().eq_ignore_ascii_case("none"));
     let body = root.children().find(|n| n.has_tag_name("body"))?;
+    let romanised = transliterations(&doc);
     let mut lines = Vec::new();
     let mut synced = !untimed;
     for p in body.descendants().filter(|n| n.has_tag_name("p")) {
@@ -67,9 +68,19 @@ pub fn parse_ttml(ttml: &str) -> Option<Lyrics> {
         if at_ms.is_none() {
             synced = false;
         }
+        // Each line names its key (`itunes:key` or `lrc:key`, "L12"), which is how its
+        // romanised text is filed. A romanisation that only repeats the line (an English line
+        // in a Korean song) is left out.
+        let romanised = p
+            .attributes()
+            .find(|a| a.name() == "key")
+            .and_then(|key| romanised.get(key.value()))
+            .filter(|r| !r.eq_ignore_ascii_case(&text))
+            .cloned();
         lines.push(LyricLine {
             at_ms: at_ms.unwrap_or(0),
             text,
+            romanised,
         });
     }
     if lines.is_empty() {
@@ -85,6 +96,37 @@ pub fn parse_ttml(ttml: &str) -> Option<Lyrics> {
         synced,
         source: "Apple Music".to_owned(),
     })
+}
+
+/// Apple's romanised lines, by line key: `<transliteration xml:lang="ja-Latn">` in the head,
+/// with a `<text for="L1">` per line (per-word spans inside, read as one line). The first
+/// transliteration in Latin letters, when a song has several.
+fn transliterations(doc: &roxmltree::Document) -> std::collections::HashMap<String, String> {
+    let latin = |n: &roxmltree::Node| {
+        n.attributes()
+            .find(|a| a.name() == "lang")
+            .is_some_and(|a| a.value().contains("Latn"))
+    };
+    let mut all = doc
+        .descendants()
+        .filter(|n| n.has_tag_name("transliteration"));
+    let Some(chosen) = all.clone().find(latin).or_else(|| all.next()) else {
+        return Default::default();
+    };
+    chosen
+        .children()
+        .filter(|n| n.has_tag_name("text"))
+        .filter_map(|t| {
+            let key = t.attribute("for")?;
+            let text = collapse(
+                &t.descendants()
+                    .filter(|n| n.is_text())
+                    .filter_map(|n| n.text())
+                    .collect::<String>(),
+            );
+            (!text.is_empty()).then(|| (key.to_owned(), text))
+        })
+        .collect()
 }
 
 /// Runs of whitespace, including the line breaks between spans, as one space.
@@ -122,6 +164,18 @@ mod tests {
         assert_eq!(lyrics.lines[0].at_ms, 140_059, "sorted by start");
         assert_eq!(lyrics.lines[0].text, "calling back (Back again)");
         assert_eq!(lyrics.lines[1].text, "Second line");
+    }
+
+    /// Apple's romaji for a Japanese line sits under it; a line whose romanisation only repeats
+    /// it gets none.
+    #[test]
+    fn apple_romanisations_attach_to_their_lines() {
+        let ttml = r#"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" xmlns:lrc="http://lrc.red" itunes:timing="Word"><head><metadata><iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal"><transliterations><transliteration xml:lang="ja-Latn"><text for="L1"><span begin="0.789" end="1.254" xmlns="http://www.w3.org/ns/ttml">shizu</span><span begin="1.254" end="1.690" xmlns="http://www.w3.org/ns/ttml">mu</span> <span begin="1.690" end="2.430" xmlns="http://www.w3.org/ns/ttml">you ni</span></text><text for="L2">Hello</text></transliteration></transliterations></iTunesMetadata></metadata></head><body><div><p begin="0.789" end="2.430" lrc:key="L1"><span begin="0.789" end="1.254">沈</span><span begin="1.254" end="1.690">む</span><span begin="1.690" end="2.430">ように</span></p><p begin="3.0" end="4.0" itunes:key="L2">Hello</p><p begin="5.0" end="6.0" itunes:key="L3">終わり</p></div></body></tt>"#;
+        let lyrics = parse_ttml(ttml).unwrap();
+        assert_eq!(lyrics.lines[0].text, "沈むように");
+        assert_eq!(lyrics.lines[0].romanised.as_deref(), Some("shizumu you ni"));
+        assert_eq!(lyrics.lines[1].romanised, None, "only repeats the line");
+        assert_eq!(lyrics.lines[2].romanised, None, "none given");
     }
 
     #[test]

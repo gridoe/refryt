@@ -54,6 +54,7 @@ pub fn plain_lines(text: &str) -> Vec<LyricLine> {
         .map(|l| LyricLine {
             at_ms: 0,
             text: l.trim_end().to_owned(),
+            romanised: None,
         })
         .collect()
 }
@@ -76,6 +77,7 @@ pub fn parse_lrc(text: &str) -> Vec<LyricLine> {
         out.push(LyricLine {
             at_ms,
             text: without_word_stamps(&line[close + 1..]),
+            romanised: None,
         });
     }
     out.sort_by_key(|l| l.at_ms);
