@@ -1,0 +1,26 @@
+/* Windows Dark
+   Windows 11's Fluent dark colours: a charcoal canvas with slightly raised surfaces, and
+   the Windows 11 sky-blue accent.
+
+   A refryt theme. Edit and save to repaint the app; see docs/THEMES.md for every
+   variable. What a file leaves out is derived from --base, --text and --accent. */
+
+:root {
+  color-scheme: dark;
+
+  --base:             #202020;  /* the cards */
+  --text:             #ffffff;  /* body text */
+  --accent:           #60cdff;  /* play buttons, selection, links */
+  --on-accent:        #000000;  /* text and icons on the accent */
+
+  --gutter:           #1c1c1c;  /* the gap behind the cards */
+  --popup:            #2c2c2c;  /* menus and popups */
+  --surface:          #2d2d2d;  /* chips, inputs */
+  --surface-hover:    #383838;
+  --surface-active:   #424242;
+  --outline:          #3a3a3a;  /* hairlines */
+  --subtext:          #d0d0d0;  /* second-rank text */
+  --muted:            #9a9a9a;  /* third-rank text */
+  --danger:           #ff99a4;
+  --warning:          #fce100;
+}

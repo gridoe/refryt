@@ -1,0 +1,26 @@
+/* macOS Light
+   The Mac's own system colours, as Safari and Finder use them: white pages in light
+   grey, with system blue for buttons and links.
+
+   A refryt theme. Edit and save to repaint the app; see docs/THEMES.md for every
+   variable. What a file leaves out is derived from --base, --text and --accent. */
+
+:root {
+  color-scheme: light;
+
+  --base:             #ffffff;  /* the cards */
+  --text:             #1d1d1f;  /* body text */
+  --accent:           #007aff;  /* play buttons, selection, links */
+  --on-accent:        #ffffff;  /* text and icons on the accent */
+
+  --gutter:           #ececec;  /* the gap behind the cards */
+  --popup:            #f5f5f7;  /* menus and popups */
+  --surface:          #ebebef;  /* chips, inputs */
+  --surface-hover:    #e0e0e5;
+  --surface-active:   #d1d1d6;
+  --outline:          #d1d1d6;  /* hairlines */
+  --subtext:          #6e6e73;  /* second-rank text */
+  --muted:            #8e8e93;  /* third-rank text */
+  --danger:           #e0352b;
+  --warning:          #b25000;
+}

@@ -1,0 +1,26 @@
+/* Windows Light
+   Windows 11's Fluent light colours: a soft grey canvas with crisp white cards, and the
+   Windows 11 system blue.
+
+   A refryt theme. Edit and save to repaint the app; see docs/THEMES.md for every
+   variable. What a file leaves out is derived from --base, --text and --accent. */
+
+:root {
+  color-scheme: light;
+
+  --base:             #f3f3f3;  /* the cards */
+  --text:             #1b1b1b;  /* body text */
+  --accent:           #0067c0;  /* play buttons, selection, links */
+  --on-accent:        #ffffff;  /* text and icons on the accent */
+
+  --gutter:           #e8e8e8;  /* the gap behind the cards */
+  --popup:            #ffffff;  /* menus and popups */
+  --surface:          #ffffff;  /* chips, inputs */
+  --surface-hover:    #eaeaea;
+  --surface-active:   #dcdcdc;
+  --outline:          #d6d6d6;  /* hairlines */
+  --subtext:          #5c5c5c;  /* second-rank text */
+  --muted:            #727272;  /* third-rank text */
+  --danger:           #c42b1c;
+  --warning:          #9d5d00;
+}

@@ -1,9 +1,10 @@
 # Themes
 
 Every colour theme in refryt is a `.css` file in the themes folder, including the ones the app
-ships with. The first time refryt starts, it writes its 23 themes there (Classic, Catppuccin,
-Nord, Gruvbox, Tokyo Night, Dracula, Rosé Pine, Everforest and Solarized, each light and dark
-flavour as its own file, and Spotify). From then on the folder is all there is:
+ships with. The first time refryt starts, it writes its 29 themes there (Classic, Catppuccin,
+Nord, Gruvbox, Tokyo Night, Dracula, Rosé Pine, Everforest, Solarized, macOS, Windows and Breeze, each
+light and dark flavour as its own file, and Spotify). A fresh install starts on macOS Dark on a
+Mac, Windows Dark on Windows, and Classic Dark elsewhere. From then on the folder is all there is:
 
 - **Delete a file** and that theme is gone. Nothing puts it back.
 - **A theme added in a newer release** is written into the folder once. A hidden `.offered` file

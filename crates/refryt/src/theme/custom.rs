@@ -210,12 +210,48 @@ pub const BUILTIN: &[(&str, &str)] = &[
         include_str!("../../themes/Tokyo Night Storm.css"),
     ),
     ("Spotify", include_str!("../../themes/Spotify.css")),
+    ("macOS Dark", include_str!("../../themes/macOS Dark.css")),
+    ("macOS Light", include_str!("../../themes/macOS Light.css")),
+    (
+        "Windows Dark",
+        include_str!("../../themes/Windows Dark.css"),
+    ),
+    (
+        "Windows Light",
+        include_str!("../../themes/Windows Light.css"),
+    ),
+    ("Breeze Dark", include_str!("../../themes/Breeze Dark.css")),
+    (
+        "Breeze Light",
+        include_str!("../../themes/Breeze Light.css"),
+    ),
 ];
+
+/// The themes a fresh install starts on, `(dark, light)`: the system's own colours on macOS and
+/// Windows, Classic elsewhere. Only a fresh install: a settings file that already exists keeps
+/// what it names, so nobody's look changes on an update.
+pub const fn platform_default() -> (&'static str, &'static str) {
+    if cfg!(target_os = "macos") {
+        ("macOS Dark", "macOS Light")
+    } else if cfg!(target_os = "windows") {
+        ("Windows Dark", "Windows Light")
+    } else {
+        ("Classic Dark", "Classic Light")
+    }
+}
 
 /// Built-in themes added after the first release that shipped themes. A folder made before the
 /// app kept its [`OFFERED`] record was given every other built-in, so these are the ones it still
 /// needs offering.
-const ADDED_LATER: &[&str] = &["Spotify"];
+const ADDED_LATER: &[&str] = &[
+    "Spotify",
+    "macOS Dark",
+    "macOS Light",
+    "Windows Dark",
+    "Windows Light",
+    "Breeze Dark",
+    "Breeze Light",
+];
 
 /// The file in the themes folder that names every built-in theme already written there once. A
 /// newer release writes only the built-ins missing from it, so a new theme reaches an existing

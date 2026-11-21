@@ -505,6 +505,19 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// The settings of a first start, with no settings file yet: the defaults, on the
+    /// platform's own themes ([`crate::theme::custom::platform_default`]). [`Default`] keeps
+    /// Classic, since it also fills the fields an existing file leaves out, and a file from
+    /// before themes were named was on Classic.
+    pub fn fresh() -> Self {
+        let (dark, light) = crate::theme::custom::platform_default();
+        Self {
+            dark_theme: dark.to_owned(),
+            light_theme: light.to_owned(),
+            ..Self::default()
+        }
+    }
+
     /// The theme chosen for this polarity, if it loaded and is of that polarity.
     pub fn chosen_theme<'a>(&self, dark: bool, themes: &'a Themes) -> Option<&'a CustomTheme> {
         let name = if dark {
@@ -628,8 +641,10 @@ pub fn load() -> Settings {
     let Ok(path) = path() else {
         return Settings::default();
     };
-    let Ok(bytes) = std::fs::read(&path) else {
-        return Settings::default();
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Settings::fresh(),
+        Err(_) => return Settings::default(),
     };
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
         tracing::warn!(error = %e, "settings file could not be parsed; using defaults");
@@ -723,6 +738,33 @@ mod tests {
     /// The literal shape of every file on disk before this milestone: a theme and the tint
     /// toggle that no longer exists. It must still parse, and land on today's defaults for the
     /// three fields it never mentioned — this is the actual migration every user's file takes.
+    /// A first start gets the platform's themes, and they ship with the app; an existing file
+    /// that never named a theme stays on Classic.
+    #[test]
+    fn a_fresh_install_starts_on_the_platform_theme() {
+        let fresh = Settings::fresh();
+        let shipped = |name: &str| {
+            crate::theme::custom::BUILTIN
+                .iter()
+                .any(|(n, css)| *n == name && crate::theme::custom::parse(n, css).is_ok())
+        };
+        assert!(shipped(&fresh.dark_theme) && shipped(&fresh.light_theme));
+        let parse = |n: &str| {
+            let (_, css) = crate::theme::custom::BUILTIN
+                .iter()
+                .find(|(b, _)| *b == n)
+                .unwrap();
+            crate::theme::custom::parse(n, css).unwrap()
+        };
+        assert!(parse(&fresh.dark_theme).dark && !parse(&fresh.light_theme).dark);
+        if cfg!(target_os = "macos") {
+            assert_eq!(fresh.dark_theme, "macOS Dark");
+        } else if cfg!(target_os = "windows") {
+            assert_eq!(fresh.dark_theme, "Windows Dark");
+        }
+        assert_eq!(Settings::default().dark_theme, "Classic Dark");
+    }
+
     #[test]
     fn a_settings_file_from_before_schemes_still_loads() {
         let migrated: Settings =

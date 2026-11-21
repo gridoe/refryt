@@ -1,0 +1,26 @@
+/* Breeze Dark
+   KDE Plasma's Breeze Dark colours (BreezeDark.colors): charcoal windows over darker views,
+   with Breeze blue for selection and focus.
+
+   A refryt theme. Edit and save to repaint the app; see docs/THEMES.md for every
+   variable. What a file leaves out is derived from --base, --text and --accent. */
+
+:root {
+  color-scheme: dark;
+
+  --base:             #202326;  /* the cards */
+  --text:             #fcfcfc;  /* body text */
+  --accent:           #3daee9;  /* play buttons, selection, links */
+  --on-accent:        #141618;  /* text and icons on the accent */
+
+  --gutter:           #141618;  /* the gap behind the cards */
+  --popup:            #292c30;  /* menus and popups */
+  --surface:          #292c30;  /* chips, inputs */
+  --surface-hover:    #31363b;
+  --surface-active:   #3b4045;
+  --outline:          #3a3e43;  /* hairlines */
+  --subtext:          #a1a9b1;  /* second-rank text */
+  --muted:            #7a828a;  /* third-rank text */
+  --danger:           #da4453;
+  --warning:          #f67400;
+}

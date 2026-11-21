@@ -1,0 +1,26 @@
+/* Breeze Light
+   KDE Plasma's Breeze Light colours (BreezeLight.colors): white views on light grey
+   windows, with Breeze blue for selection and focus.
+
+   A refryt theme. Edit and save to repaint the app; see docs/THEMES.md for every
+   variable. What a file leaves out is derived from --base, --text and --accent. */
+
+:root {
+  color-scheme: light;
+
+  --base:             #ffffff;  /* the cards */
+  --text:             #232629;  /* body text */
+  --accent:           #3daee9;  /* play buttons, selection, links */
+  --on-accent:        #232629;  /* text and icons on the accent */
+
+  --gutter:           #eff0f1;  /* the gap behind the cards */
+  --popup:            #f7f7f7;  /* menus and popups */
+  --surface:          #eff0f1;  /* chips, inputs */
+  --surface-hover:    #e3e5e7;
+  --surface-active:   #dee0e2;
+  --outline:          #d5d8dc;  /* hairlines */
+  --subtext:          #707d8a;  /* second-rank text */
+  --muted:            #8c96a0;  /* third-rank text */
+  --danger:           #da4453;
+  --warning:          #f67400;
+}
