@@ -1,0 +1,26 @@
+/* macOS Dark
+   The Mac's own system colours, as Safari and Finder use them: near-black pages in
+   charcoal, with system blue for buttons and links.
+
+   A refryt theme. Edit and save to repaint the app; see docs/THEMES.md for every
+   variable. What a file leaves out is derived from --base, --text and --accent. */
+
+:root {
+  color-scheme: dark;
+
+  --base:             #1e1e1e;  /* the cards */
+  --text:             #f5f5f7;  /* body text */
+  --accent:           #0a84ff;  /* play buttons, selection, links */
+  --on-accent:        #ffffff;  /* text and icons on the accent */
+
+  --gutter:           #141414;  /* the gap behind the cards */
+  --popup:            #282828;  /* menus and popups */
+  --surface:          #3a3a3c;  /* chips, inputs */
+  --surface-hover:    #444446;
+  --surface-active:   #545456;
+  --outline:          #3d3d3f;  /* hairlines */
+  --subtext:          #aeaeb2;  /* second-rank text */
+  --muted:            #8e8e93;  /* third-rank text */
+  --danger:           #ff453a;
+  --warning:          #ff9f0a;
+}

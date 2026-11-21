@@ -237,7 +237,8 @@ Built with Rust and [egui](https://github.com/emilk/egui), [mpv](https://mpv.io/
   [Tokyo Night](https://github.com/folke/tokyonight.nvim),
   [Dracula](https://spec.draculatheme.com), [Rosé Pine](https://github.com/rose-pine/palette),
   [Everforest](https://github.com/sainnhe/everforest),
-  [Solarized](https://ethanschoonover.com/solarized) and Spotify's own colours. Each file in
+  [Solarized](https://ethanschoonover.com/solarized), Spotify's own colours, the system
+  colours of macOS and Windows 11, and KDE Plasma's Breeze. Each file in
   `crates/refryt/themes` names its source.
 
 ## Licence
