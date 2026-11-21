@@ -955,7 +955,20 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
     // Discord Rich Presence. Nothing to configure: the app connects as its own Discord
     // application (the id is fixed in `crate::discord`), so the toggle is the whole setting.
     let mut discord = app.settings.discord_rich_presence;
-    let mut lrclib = app.settings.lrclib_lyrics;
+    // The sources asked, in order, as a line under the row that opens the list.
+    let lyrics_summary = {
+        let asked = crate::lyrics::asked(&app.settings.lyrics_sources);
+        if asked.is_empty() {
+            "All off: no lyrics are looked up.".to_owned()
+        } else {
+            asked
+                .iter()
+                .map(|s| s.label())
+                .collect::<Vec<_>>()
+                .join(", then ")
+        }
+    };
+    let mut open_lyrics_sources = false;
     // The switch is casting on the network the computer is on: on, it is allowed here; off,
     // it is not, and any other network allowed stays so.
     let on_here = app.settings.cast_receiver && app.cast_allowed_here();
@@ -1002,15 +1015,9 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
             "Shows what you're playing on Discord.",
             &mut discord,
         );
-        toggle_row(
-            g,
-            ui,
-            &p,
-            "setting-lrclib",
-            "Synced lyrics from LRCLIB",
-            "Asks lrclib.net for lyrics with timing. Off, lyrics come from YouTube without it.",
-            &mut lrclib,
-        );
+        g.row(ui, "Lyrics sources", &lyrics_summary, |ui| {
+            open_lyrics_sources = widgets::outline_button(ui, &p, "Change…").clicked();
+        });
     });
 
     let ctx = ui.ctx().clone();
@@ -1021,10 +1028,12 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
         }
         s.hide_tray_on_close = hide_tray;
         s.discord_rich_presence = discord;
-        s.lrclib_lyrics = lrclib;
     });
     if cast != on_here {
         app.set_cast_here(&ctx, cast);
+    }
+    if open_lyrics_sources {
+        app.lyrics_sources_open = true;
     }
     if let Some(id) = forget {
         app.forget_cast_network(&ctx, &id);

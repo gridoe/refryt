@@ -22,9 +22,19 @@ session, and plays are added to your YouTube history unless "Save listening hist
 in Settings. The bundled yt-dlp contacts YouTube the same way when it is used for playback.
 Google's privacy policy applies: <https://policies.google.com/privacy>.
 
-**LRCLIB** (lrclib.net), for synced lyrics. While the lyrics panel is open, each song's title,
-artist, album and length are sent to look its lyrics up. Turn it off with "Synced lyrics from
-LRCLIB" in Settings, Integrations; lyrics then come from YouTube alone.
+**Lyrics sources**, while lyrics are shown. Each source that's on is asked for each song:
+- **BetterLyrics** (lyrics-api.boidu.dev) gets the song's title, artist, album and length.
+- **lrc.red** gets the title, artist and length.
+- **LRCLIB** (lrclib.net) gets the title, artist, album and length.
+- **KuGou** (mobileservice.kugou.com, lyrics.kugou.com) gets the title, artist, album and
+  length.
+- **Unison** (unison.boidu.dev) gets the title, artist, album and length.
+- **Genius** (genius.com) gets the title and artist.
+- **YouTube Music**, for its synced and plain lyrics, gets the video id. These requests are sent
+  without your Google session.
+
+Turn any of them off, or change the order they're tried in, under "Lyrics sources" in Settings,
+Integrations. A source that's off is never contacted.
 
 **GitHub** (api.github.com, github.com), to check for a new release when refryt starts and to
 download one when you choose to update. The check sends no information about you or what you
