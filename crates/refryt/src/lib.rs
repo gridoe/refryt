@@ -26,6 +26,7 @@ pub mod crash;
 pub mod discord;
 pub mod downloads;
 pub mod emoji;
+pub mod entity_stats;
 pub mod flatpak;
 pub mod history_poll;
 pub mod icons;

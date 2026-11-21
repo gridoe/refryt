@@ -39,7 +39,7 @@ impl StatsScope {
         }
     }
 
-    fn counts(self, play: &Play) -> bool {
+    pub(crate) fn counts(self, play: &Play) -> bool {
         self == StatsScope::Everywhere || play.source == play_log::Source::App
     }
 }
@@ -164,8 +164,24 @@ impl Period {
 
 /// By name, not id: an import knows an artist only by their name, and they are the same artist
 /// as the one a play here knows by id.
-fn artist_key(artist: &play_log::LoggedArtist) -> String {
+pub(crate) fn artist_key(artist: &play_log::LoggedArtist) -> String {
     artist.name.to_lowercase()
+}
+
+/// The bars of plays over time for a span starting at `since`: months, or years once there
+/// are too many months to show.
+pub(crate) fn span_bars(
+    since: NaiveDate,
+    today: NaiveDate,
+    days: &HashMap<NaiveDate, u32>,
+) -> Vec<Bar> {
+    let months = i64::from(today.year() - since.year()) * 12 + i64::from(today.month())
+        - i64::from(since.month());
+    if months < MAX_MONTH_BARS {
+        month_bars(since, today, days)
+    } else {
+        year_bars(since, today, days)
+    }
 }
 
 /// One bar of plays over time.
@@ -508,15 +524,7 @@ fn bars(
                 plays: plays(d, (d + Days::new(6)).min(today)),
             })
             .collect(),
-        StatsRange::Year | StatsRange::All => {
-            let months = i64::from(today.year() - since.year()) * 12 + i64::from(today.month())
-                - i64::from(since.month());
-            if months < MAX_MONTH_BARS {
-                month_bars(since, today, days)
-            } else {
-                year_bars(since, today, days)
-            }
-        }
+        StatsRange::Year | StatsRange::All => span_bars(since, today, days),
     }
 }
 
@@ -573,27 +581,72 @@ pub fn load(range: StatsRange, scope: StatsScope) -> Result<Report> {
     Ok(builder.finish())
 }
 
-/// How many times an artist has been played, for their page.
+/// What an artist's page says about your listening to them: their plays, and where they rank
+/// among your artists all-time and this calendar month.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArtistHighlight {
+    pub plays: u64,
+    pub rank: Option<u64>,
+    pub rank_month: Option<u64>,
+}
+
+impl ArtistHighlight {
+    /// A rank only reads as a highlight this high up.
+    const NOTABLE: u64 = 10;
+
+    /// The line after their audience: a top-10 rank, this month's when it is the higher one,
+    /// or else their plays. None when you've never played them.
+    pub fn line(&self) -> Option<String> {
+        if self.plays == 0 {
+            return None;
+        }
+        let all = self.rank.filter(|r| *r <= Self::NOTABLE);
+        let month = self.rank_month.filter(|r| *r <= Self::NOTABLE);
+        Some(match (all, month) {
+            (all, Some(month)) if all.is_none_or(|all| month < all) => {
+                format!("Your #{month} artist this month")
+            }
+            (Some(all), _) => format!("Your #{all} artist"),
+            _ if self.plays == 1 => "1 total play by you".to_owned(),
+            _ => format!("{} total plays by you", self.plays),
+        })
+    }
+}
+
+/// How an artist stands in your listening, for their page.
 ///
 /// By their name once a play with this id gives it, since an import knows them only by name.
-pub fn artist_plays(id: &str) -> Result<u64> {
+pub fn artist_highlight(id: &str) -> Result<ArtistHighlight> {
     let details = play_log::load_details();
-    let mut count = ArtistCount::default();
+    let now = Local::now();
+    let today = now.date_naive();
+    let month_start = today
+        .with_day(1)
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .and_then(|at| at.and_local_timezone(Local).earliest())
+        .map_or(now.timestamp(), |at| at.timestamp());
+    let mut count = ArtistCount {
+        month_start,
+        ..ArtistCount::default()
+    };
     play_log::for_each(|mut play| {
         if let Some(details) = details.get(&play.video_id) {
             play.apply(details);
         }
         count.add(id, &play);
     })?;
-    Ok(count.total())
+    Ok(count.highlight())
 }
 
 /// Plays by name, because an import names an artist without giving its id: one looked-up song
-/// or play here is enough to tie the id to the name.
+/// or play here is enough to tie the id to the name. Every artist is counted, all-time and since
+/// `month_start`, which is what ranking them needs.
 #[derive(Default)]
 struct ArtistCount {
     name: Option<String>,
     by_name: HashMap<String, u64>,
+    month_start: i64,
+    this_month: HashMap<String, u64>,
 }
 
 impl ArtistCount {
@@ -602,6 +655,9 @@ impl ArtistCount {
             let key = artist_key(artist);
             if artist.id.as_deref() == Some(id) {
                 self.name.get_or_insert_with(|| key.clone());
+            }
+            if play.at >= self.month_start {
+                *self.this_month.entry(key.clone()).or_default() += 1;
             }
             *self.by_name.entry(key).or_default() += 1;
         }
@@ -612,6 +668,18 @@ impl ArtistCount {
             .as_ref()
             .and_then(|name| self.by_name.get(name).copied())
             .unwrap_or(0)
+    }
+
+    fn highlight(&self) -> ArtistHighlight {
+        let rank = |counts: &HashMap<String, u64>| {
+            let mine = *counts.get(self.name.as_ref()?).filter(|n| **n > 0)?;
+            Some(1 + counts.values().filter(|n| **n > mine).count() as u64)
+        };
+        ArtistHighlight {
+            plays: self.total(),
+            rank: rank(&self.by_name),
+            rank_month: rank(&self.this_month),
+        }
     }
 }
 
@@ -805,6 +873,68 @@ mod tests {
         assert_eq!(count.total(), 0, "nothing says who the id is yet");
         count.add("UCx", &known);
         assert_eq!(count.total(), 2);
+    }
+
+    #[test]
+    fn an_artist_page_highlights_a_top_rank_or_else_the_plays() {
+        let line = |plays, rank, rank_month| {
+            ArtistHighlight {
+                plays,
+                rank,
+                rank_month,
+            }
+            .line()
+        };
+        assert_eq!(line(0, None, None), None);
+        assert_eq!(
+            line(399, Some(2), Some(2)).as_deref(),
+            Some("Your #2 artist")
+        );
+        assert_eq!(
+            line(399, Some(5), Some(3)).as_deref(),
+            Some("Your #3 artist this month")
+        );
+        assert_eq!(
+            line(80, Some(40), Some(3)).as_deref(),
+            Some("Your #3 artist this month")
+        );
+        assert_eq!(line(80, Some(4), None).as_deref(), Some("Your #4 artist"));
+        assert_eq!(
+            line(80, Some(40), Some(12)).as_deref(),
+            Some("80 total plays by you")
+        );
+        assert_eq!(
+            line(1, Some(40), None).as_deref(),
+            Some("1 total play by you")
+        );
+    }
+
+    #[test]
+    fn an_artist_ranks_against_every_artist_and_this_month_apart() {
+        let n = now();
+        let mut count = ArtistCount {
+            month_start: at_hour(&n, 10, 0),
+            ..ArtistCount::default()
+        };
+        for (song, artist, days) in [
+            ("a", "Top", 40),
+            ("a", "Top", 40),
+            ("a", "Top", 40),
+            ("b", "Mine", 40),
+            ("b", "Mine", 2),
+            ("c", "Fresh", 1),
+        ] {
+            count.add("id-Mine", &play(song, artist, at_hour(&n, days, 12)));
+        }
+        assert_eq!(
+            count.highlight(),
+            ArtistHighlight {
+                plays: 2,
+                rank: Some(2),
+                // This month Mine and Fresh have one play each: a shared first place.
+                rank_month: Some(1),
+            }
+        );
     }
 
     #[test]

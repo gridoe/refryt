@@ -3214,10 +3214,8 @@ pub(crate) fn row_menu(
                 mui.close();
             }
 
-            // Block three: where it came from, and sending it on.
-            if t.album_id.is_some() || t.primary_artist_id().is_some() || t.local_path.is_none() {
-                menu_divider(mui, palette);
-            }
+            // Block three: where it came from, your stats, and sending it on.
+            menu_divider(mui, palette);
             if let Some(id) = &t.album_id
                 && menu_item(mui, palette, Icon::Disc3, "Go to album", None).clicked()
             {
@@ -3228,6 +3226,10 @@ pub(crate) fn row_menu(
                 && menu_item(mui, palette, Icon::CircleUser, "Go to artist", None).clicked()
             {
                 choice = Some(RowAction::GoToArtist(id.to_owned()));
+                mui.close();
+            }
+            if menu_item(mui, palette, Icon::ChartColumn, "Your stats", None).clicked() {
+                choice = Some(RowAction::SongStats(t.video_id.clone()));
                 mui.close();
             }
             // There is no real YouTube URL for a local track to copy.

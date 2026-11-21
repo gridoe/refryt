@@ -527,6 +527,10 @@ pub enum Route {
     Stats,
     /// One of Stats' top lists, past the few rows Stats shows.
     StatsTop(crate::listening_stats::TopList),
+    /// One artist's listening, by their lowercased name (`entity_stats::EntityKey`).
+    StatsArtist(String),
+    /// One song's listening, by its video id.
+    StatsSong(String),
     Library,
     Settings,
     Artist(String),
@@ -569,6 +573,8 @@ impl Route {
                 Some(("album", id)) => Some(Route::Album(id.to_owned())),
                 Some(("playlist", id)) => Some(Route::Playlist(id.to_owned())),
                 Some(("homeshelf", title)) => Some(Route::HomeShelf(title.to_owned())),
+                Some(("artist-stats", name)) => Some(Route::StatsArtist(name.to_lowercase())),
+                Some(("song-stats", id)) => Some(Route::StatsSong(id.to_owned())),
                 _ => None,
             },
         }
@@ -1500,6 +1506,11 @@ pub struct App {
     /// What the Stats page shows. An older report stays up while a newer one is added up.
     pub(crate) stats_report: Option<Arc<crate::listening_stats::Report>>,
     pub(crate) stats_error: Option<String>,
+    /// What an artist's or song's stats page shows, kept while a newer one is added up.
+    pub(crate) entity_report: Option<Arc<crate::entity_stats::EntityReport>>,
+    pub(crate) entity_error: Option<String>,
+    /// The report last asked for, and at which `stats_epoch`: a newer epoch asks again.
+    entity_requested: Option<(crate::entity_stats::EntityKey, u64)>,
     /// Which report is wanted: bumped by a new range and a new play.
     stats_epoch: u64,
     /// The last report asked for.
@@ -1507,7 +1518,7 @@ pub struct App {
     /// Settings' Delete stats has been pressed once, and is asking to be sure.
     pub(crate) stats_delete_armed: bool,
     /// An artist's id and how many times you've played them, for their page.
-    pub(crate) artist_plays: Option<(String, u64)>,
+    pub(crate) artist_plays: Option<(String, crate::listening_stats::ArtistHighlight)>,
     /// Songs being looked up for the Stats page.
     looking_up_songs: bool,
     /// Songs already asked about this run, so one YouTube won't answer isn't asked forever.
@@ -2218,6 +2229,9 @@ impl App {
             stats_scope: Default::default(),
             stats_report: None,
             stats_error: None,
+            entity_report: None,
+            entity_error: None,
+            entity_requested: None,
             stats_epoch: 0,
             stats_requested: None,
             stats_delete_armed: false,
@@ -4196,6 +4210,12 @@ impl App {
             Route::Moods => self.load_moods(),
             Route::History => self.load_history(),
             Route::Stats | Route::StatsTop(_) => self.load_stats(),
+            Route::StatsArtist(name) => {
+                self.load_entity_stats(crate::entity_stats::EntityKey::Artist(name));
+            }
+            Route::StatsSong(id) => {
+                self.load_entity_stats(crate::entity_stats::EntityKey::Song(id))
+            }
             Route::Search | Route::Settings => {}
         }
     }
@@ -4587,6 +4607,10 @@ impl App {
             Route::Stats | Route::StatsTop(_) => {
                 self.stats_error = None;
                 self.stats_epoch += 1;
+            }
+            Route::StatsArtist(_) | Route::StatsSong(_) => {
+                self.entity_error = None;
+                self.entity_requested = None;
             }
             Route::Artist(_) | Route::ArtistLiked(_) => {
                 self.artist_for = None;
@@ -6049,6 +6073,18 @@ impl App {
                     self.stats_error = Some(error);
                 }
                 Event::StatsLoaded { .. } | Event::StatsFailed { .. } => {}
+                Event::EntityStatsLoaded { report, epoch }
+                    if self.entity_requested.as_ref() == Some(&(report.key.clone(), epoch)) =>
+                {
+                    self.entity_report = Some(report);
+                    self.entity_error = None;
+                }
+                Event::EntityStatsFailed { key, error, epoch }
+                    if self.entity_requested.as_ref() == Some(&(key.clone(), epoch)) =>
+                {
+                    self.entity_error = Some(error);
+                }
+                Event::EntityStatsLoaded { .. } | Event::EntityStatsFailed { .. } => {}
                 Event::TakeoutImported { result } => self.takeout_imported(result),
                 Event::HistoryChecked { found, ok } => {
                     self.history_checking = false;
@@ -6058,8 +6094,8 @@ impl App {
                         self.log_play(Some(play));
                     }
                 }
-                Event::ArtistPlaysCounted { id, plays } => {
-                    self.artist_plays = Some((id, plays));
+                Event::ArtistPlaysCounted { id, highlight } => {
+                    self.artist_plays = Some((id, highlight));
                 }
                 Event::PlaylistCreated { title } => {
                     self.toast(&format!("Created “{title}”"));
@@ -7477,6 +7513,7 @@ impl App {
             }
             RowAction::GoToAlbum(id) => self.navigate(Route::Album(id)),
             RowAction::GoToArtist(id) => self.navigate(Route::Artist(id)),
+            RowAction::SongStats(id) => self.navigate(Route::StatsSong(id)),
             RowAction::CopyLink(id) => {
                 self.backend.copy_text(crate::model::track_url(&id));
                 self.toast("Link copied");
@@ -7892,6 +7929,26 @@ impl App {
         self.stats_requested = Some(self.stats_epoch);
         self.backend
             .load_listening_stats(self.stats_range, self.stats_scope, self.stats_epoch);
+    }
+
+    /// Ask for an artist's or song's report, unless it is the one already asked for. Another
+    /// artist's report is dropped at once, so their page never shows someone else's numbers.
+    fn load_entity_stats(&mut self, key: crate::entity_stats::EntityKey) {
+        let wanted = (key, self.stats_epoch);
+        if self.entity_requested.as_ref() == Some(&wanted) {
+            return;
+        }
+        if self
+            .entity_report
+            .as_ref()
+            .is_some_and(|r| r.key != wanted.0)
+        {
+            self.entity_report = None;
+        }
+        self.entity_error = None;
+        self.backend
+            .load_entity_stats(wanted.0.clone(), self.stats_scope, wanted.1);
+        self.entity_requested = Some(wanted);
     }
 
     /// Show another range on the Stats page.
@@ -9299,6 +9356,9 @@ impl eframe::App for App {
                             Route::History => ui::history::page(self, ui),
                             Route::Stats => ui::listening::page(self, ui),
                             Route::StatsTop(list) => ui::listening::top_page(self, ui, list),
+                            Route::StatsArtist(_) | Route::StatsSong(_) => {
+                                ui::entity_stats::page(self, ui);
+                            }
                             Route::Home => ui::home::page(self, ui),
                             Route::Library => ui::library::page(self, ui),
                             Route::Settings => ui::settings::page(self, ui),
@@ -9463,6 +9523,19 @@ impl eframe::App for App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stats_pages_parse_from_the_command_line() {
+        use super::Route;
+        assert_eq!(
+            Route::parse("artist-stats:Ado"),
+            Some(Route::StatsArtist("ado".to_owned()))
+        );
+        assert_eq!(
+            Route::parse("song-stats:dQw4w9WgXcQ"),
+            Some(Route::StatsSong("dQw4w9WgXcQ".to_owned()))
+        );
+    }
+
     /// A window restored fullscreen is taken out of it and then resized — in that order, and the
     /// resize only once the window reports it is out. The fullscreen player's own fullscreen is
     /// never touched, nor is a window that was never fullscreen, and a fullscreen that arrives

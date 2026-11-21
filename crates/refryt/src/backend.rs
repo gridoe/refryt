@@ -266,9 +266,18 @@ pub enum Event {
         error: String,
         epoch: u64,
     },
+    EntityStatsLoaded {
+        report: Arc<crate::entity_stats::EntityReport>,
+        epoch: u64,
+    },
+    EntityStatsFailed {
+        key: crate::entity_stats::EntityKey,
+        error: String,
+        epoch: u64,
+    },
     ArtistPlaysCounted {
         id: String,
-        plays: u64,
+        highlight: crate::listening_stats::ArtistHighlight,
     },
     TakeoutImported {
         result: Result<crate::takeout::Summary, String>,
@@ -1703,6 +1712,30 @@ impl Backend {
         });
     }
 
+    /// Add up one artist's or song's plays for their stats page, off the UI thread.
+    pub fn load_entity_stats(
+        &self,
+        key: crate::entity_stats::EntityKey,
+        scope: crate::listening_stats::StatsScope,
+        epoch: u64,
+    ) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.rt.spawn_blocking(move || {
+            let event = match crate::entity_stats::load(key.clone(), scope) {
+                Ok(report) => Event::EntityStatsLoaded {
+                    report: Arc::new(report),
+                    epoch,
+                },
+                Err(e) => Event::EntityStatsFailed {
+                    key,
+                    error: format!("{e:#}"),
+                    epoch,
+                },
+            };
+            Self::emit(&tx, &ctx, event);
+        });
+    }
+
     /// Look up songs an import only knew the id and title of, and save what YouTube says, a few
     /// at a time. A song YouTube won't answer for is left as it is.
     pub fn look_up_songs(&self, ids: Vec<String>) {
@@ -1752,11 +1785,14 @@ impl Backend {
     /// How many times an artist has been played, for their page.
     pub fn count_artist_plays(&self, id: String) {
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
-        self.rt
-            .spawn_blocking(move || match crate::listening_stats::artist_plays(&id) {
-                Ok(plays) => Self::emit(&tx, &ctx, Event::ArtistPlaysCounted { id, plays }),
+        self.rt.spawn_blocking(
+            move || match crate::listening_stats::artist_highlight(&id) {
+                Ok(highlight) => {
+                    Self::emit(&tx, &ctx, Event::ArtistPlaysCounted { id, highlight });
+                }
                 Err(e) => debug!(error = %format!("{e:#}"), "could not read the play log"),
-            });
+            },
+        );
     }
 
     /// What you played, in dated shelves. Signed in only — the page gates, not the call.
