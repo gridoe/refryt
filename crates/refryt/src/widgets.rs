@@ -4893,6 +4893,8 @@ pub fn tab_strip(
 
 /// The height of a [`Group`] row that holds one line of control.
 const ROW_H: f32 = 58.0;
+/// The least space under a settings row's words, once a long detail has grown the row.
+const ROW_MIN_BOTTOM: f32 = 10.0;
 
 /// Settings rows inside one card: each a title and a line under it on the left, its control on
 /// the right, with a hairline between rows. Build one with [`setting_group`].
@@ -4946,9 +4948,17 @@ impl Group<'_> {
                 ui.add_space(8.0);
                 ui.vertical(|ui| {
                     // Centred by measure: a `vertical` starts at the top of the row's rect.
+                    let top = ui.max_rect().top();
                     let lines = if detail.is_empty() { 1.0 } else { 2.0 };
                     ui.add_space(((ROW_H - lines * 15.5) / 2.0 - 1.0).max(8.0));
                     self.text(ui, title, detail);
+                    // A detail that wraps to more lines grows the row past `ROW_H`, and its
+                    // last line sat on the row's bottom edge: keep a margin under it. A row
+                    // whose words fit already has more than that, and is left as it was.
+                    let room = ROW_H - (ui.min_rect().bottom() - top);
+                    if room < ROW_MIN_BOTTOM {
+                        ui.add_space(ROW_MIN_BOTTOM - room.max(0.0));
+                    }
                 });
             },
         );
