@@ -137,6 +137,17 @@ fn main() -> eframe::Result {
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     let autostart = false;
 
+    // The GTK colour lookup behind the "GTK" theme (`theme::system`): GTK cannot share the
+    // main thread with the app's window either, so it answers from a child of its own.
+    #[cfg(target_os = "linux")]
+    if args.iter().any(|a| a == refryt::theme::system::GTK_ARG) {
+        std::process::exit(if refryt::theme::system::gtk_child() {
+            0
+        } else {
+            1
+        });
+    }
+
     // The child half of the in-app sign-in window: `webview_login::capture` starts this same
     // binary with `--sign-in-window <file>`, because tao's event loop cannot be created beside
     // eframe's winit one in the same process (it faults natively on Windows). Handled here —

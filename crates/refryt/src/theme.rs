@@ -14,6 +14,7 @@ use egui::{Color32, CornerRadius, Stroke};
 
 pub mod custom;
 mod ramp;
+pub mod system;
 
 // ---------------------------------------------------------------------------------------------
 // Metrics

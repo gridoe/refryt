@@ -525,6 +525,9 @@ impl Settings {
         } else {
             &self.light_theme
         };
+        if crate::theme::system::is_system(name) {
+            return themes.system_theme(name, dark);
+        }
         themes.get(name).filter(|t| t.dark == dark)
     }
 
@@ -738,6 +741,33 @@ mod tests {
     /// The literal shape of every file on disk before this milestone: a theme and the tint
     /// toggle that no longer exists. It must still parse, and land on today's defaults for the
     /// three fields it never mentioned — this is the actual migration every user's file takes.
+    /// The desktop's theme paints whatever the mode, and only when the desktop gave one.
+    #[test]
+    fn a_desktop_theme_paints_in_either_mode() {
+        let qt = crate::theme::custom::parse(
+            crate::theme::system::QT,
+            "--base:#ffffff;--text:#222222;--accent:#3366cc;",
+        )
+        .unwrap();
+        let mut themes = Themes::default();
+        let s = Settings {
+            dark_theme: crate::theme::system::QT.into(),
+            light_theme: crate::theme::system::QT.into(),
+            ..Settings::default()
+        };
+        assert!(
+            s.chosen_theme(true, &themes).is_none(),
+            "not on a KDE desktop"
+        );
+        themes.set_system(crate::theme::system::QT, vec![qt]);
+        assert_eq!(
+            s.chosen_theme(true, &themes).map(|t| t.name.as_str()),
+            Some("Qt"),
+            "a light desktop theme still paints in dark mode"
+        );
+        assert!(s.chosen_theme(false, &themes).is_some());
+    }
+
     /// A first start gets the platform's themes, and they ship with the app; an existing file
     /// that never named a theme stays on Classic.
     #[test]
@@ -989,7 +1019,7 @@ mod tests {
                 crate::theme::custom::parse("Night", &css("#101010", "dark")).unwrap(),
                 crate::theme::custom::parse("Paper", &css("#fafafa", "light")).unwrap(),
             ],
-            errors: Vec::new(),
+            ..Themes::default()
         };
         let s = Settings {
             dark_theme: "Deleted".into(),

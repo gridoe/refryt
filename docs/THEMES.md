@@ -26,6 +26,14 @@ dark themes while the app is in dark mode and the light ones in light mode, and 
 pick for each; **Mode** (System / Dark / Light) chooses between them. If the folder has no
 theme of the mode on screen, a built-in Classic paints until you add one.
 
+## Following the desktop
+
+On Linux the Theme list also starts with **GTK** and **Qt**, as Chrome's appearance settings
+do. They aren't files: refryt takes their colours from the desktop. Qt is the KDE colour
+scheme in `~/.config/kdeglobals`, so it's offered on a KDE desktop. GTK is whatever GTK 3
+theme is set, asked of GTK itself. Picking either sets it for dark and light mode alike.
+Change the desktop's theme and refryt repaints when you come back to its window.
+
 ## The file
 
 ```css
