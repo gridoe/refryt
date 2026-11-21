@@ -719,15 +719,7 @@ mod tests {
         use crate::lyrics::Source::*;
         assert_eq!(
             crate::lyrics::asked(&old.lyrics_sources),
-            vec![
-                BetterLyrics,
-                LrcRed,
-                YouTubeSynced,
-                KuGou,
-                Unison,
-                YouTube,
-                Genius
-            ]
+            vec![BetterLyrics, LrcRed, YouTubeSynced, KuGou, Unison, YouTube]
         );
         let json = serde_json::to_string(&old).unwrap();
         assert!(
