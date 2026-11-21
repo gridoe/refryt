@@ -48,7 +48,11 @@ pub async fn lyrics(http: &reqwest::Client, track: &Track) -> Result<Option<Lyri
     Ok(Some(Lyrics {
         lines: lines
             .into_iter()
-            .map(|text| crate::model::LyricLine { at_ms: 0, text })
+            .map(|text| crate::model::LyricLine {
+                at_ms: 0,
+                text,
+                romanised: None,
+            })
             .collect(),
         synced: false,
         source: "Genius".to_owned(),

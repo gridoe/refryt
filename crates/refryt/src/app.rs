@@ -2721,6 +2721,10 @@ impl App {
         {
             self.fetch_lyrics(track);
         }
+        // Romanisation changes which answer is best, among the ones already in.
+        if self.settings.lyrics_romanisation != before.lyrics_romanisation {
+            self.show_lyrics();
+        }
         if self.settings.cache_songs != before.cache_songs {
             self.backend
                 .set_song_cache(self.settings.cache_songs, self.settings.cache_size.bytes());
@@ -7294,7 +7298,11 @@ impl App {
             });
         let pick = match chosen {
             Some(source) => crate::lyrics::Pick::Use(source),
-            None => crate::lyrics::pick(&self.lyrics_order, &self.lyrics_answers),
+            None => crate::lyrics::pick(
+                &self.lyrics_order,
+                &self.lyrics_answers,
+                self.settings.lyrics_romanisation,
+            ),
         };
         match pick {
             crate::lyrics::Pick::Wait => {}

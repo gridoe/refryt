@@ -228,19 +228,157 @@ pub enum Pick {
 /// The automatic pick. Going down `order`: a source still out means waiting for it; the first
 /// with synced lyrics wins; plain text counts only once every source is in and none had timing,
 /// and then the first plain answer is used.
-pub fn pick(order: &[Source], answers: &HashMap<Source, Answer>) -> Pick {
+///
+/// With `romanise` on, synced lyrics in Japanese, Korean or Chinese that have no romanisation
+/// are only a stand-in: shown at once, but the first source further down that has a
+/// romanisation takes over when it answers.
+pub fn pick(order: &[Source], answers: &HashMap<Source, Answer>, romanise: bool) -> Pick {
     let mut plain = None;
+    let mut stand_in = None;
     for source in order {
         match answers.get(source) {
-            None | Some(Answer::Pending) => return Pick::Wait,
-            Some(Answer::Found(lyrics)) if lyrics.synced => return Pick::Use(*source),
+            None | Some(Answer::Pending) => {
+                return stand_in.map_or(Pick::Wait, Pick::Use);
+            }
+            Some(Answer::Found(lyrics)) if lyrics.synced => {
+                let wanting = romanise && needs_romanising(lyrics) && !has_romanised(lyrics);
+                match (wanting, stand_in) {
+                    (false, _) if stand_in.is_none() || has_romanised(lyrics) => {
+                        return Pick::Use(*source);
+                    }
+                    (true, None) => stand_in = Some(*source),
+                    _ => {}
+                }
+            }
             Some(Answer::Found(_)) => {
                 plain.get_or_insert(*source);
             }
             Some(Answer::Missing) => {}
         }
     }
-    plain.map_or(Pick::Nothing, Pick::Use)
+    stand_in.or(plain).map_or(Pick::Nothing, Pick::Use)
+}
+
+/// Whether a line is in a script romanisation is for: kana, CJK ideographs, Hangul.
+pub fn in_romanisable_script(text: &str) -> bool {
+    text.chars().any(|c| {
+        matches!(c,
+            '\u{3040}'..='\u{30ff}'   // hiragana, katakana
+            | '\u{31f0}'..='\u{31ff}' // katakana extensions
+            | '\u{ff66}'..='\u{ff9f}' // half-width katakana
+            | '\u{3400}'..='\u{4dbf}' // CJK extension A
+            | '\u{4e00}'..='\u{9fff}' // CJK ideographs
+            | '\u{f900}'..='\u{faff}' // CJK compatibility
+            | '\u{1100}'..='\u{11ff}' // Hangul jamo
+            | '\u{3130}'..='\u{318f}' // Hangul compatibility jamo
+            | '\u{ac00}'..='\u{d7af}' // Hangul syllables
+        )
+    })
+}
+
+/// Lyrics with lines romanisation is for.
+pub fn needs_romanising(lyrics: &Lyrics) -> bool {
+    lyrics.lines.iter().any(|l| in_romanisable_script(&l.text))
+}
+
+pub fn has_romanised(lyrics: &Lyrics) -> bool {
+    lyrics.lines.iter().any(|l| l.romanised.is_some())
+}
+
+fn has_kana(text: &str) -> bool {
+    text.chars()
+        .any(|c| matches!(c, '\u{3040}'..='\u{30ff}' | '\u{ff66}'..='\u{ff9f}'))
+}
+
+/// The words of Latin text and how many end the way Japanese syllables do, in a vowel or `n`.
+/// Romaji runs well over 70% of them, English nearer 30–50%. Words in brackets are left out:
+/// backing vocals like "(Hey! Hey!)" are the same in either.
+fn japanese_endings(text: &str) -> (usize, usize) {
+    let mut outside = String::new();
+    let mut depth = 0u32;
+    for c in text.chars() {
+        match c {
+            '(' | '[' | '（' => depth += 1,
+            ')' | ']' | '）' if depth > 0 => depth -= 1,
+            _ if depth == 0 => outside.push(c),
+            _ => {}
+        }
+    }
+    let words = outside
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase);
+    let (mut all, mut japanese) = (0, 0);
+    for w in words {
+        all += 1;
+        if w.ends_with([
+            'a', 'e', 'i', 'o', 'u', 'n', 'ā', 'ē', 'ī', 'ō', 'ū', 'â', 'ô', 'û',
+        ]) {
+            japanese += 1;
+        }
+    }
+    (all, japanese)
+}
+
+/// Romaji a lyrics file carries as lines of its own. Some LRC files hold the song in Japanese
+/// and again in romaji under the same timestamps, so each Japanese line has a twin at the same
+/// moment. Those twins become the line's romanisation, and a line both halves share (an English
+/// line) is kept once.
+///
+/// Judged over the whole file, not line by line: the twins must read as romaji taken together,
+/// so an English translation filed the same way stays as lines, and most Japanese lines must
+/// have one, so a stray repeated stamp changes nothing.
+pub fn pair_romaji(lyrics: &mut Lyrics) {
+    if !lyrics.synced || has_romanised(lyrics) || !lyrics.lines.iter().any(|l| has_kana(&l.text)) {
+        return;
+    }
+    let lines = &lyrics.lines;
+    let japanese = lines
+        .iter()
+        .filter(|l| in_romanisable_script(&l.text))
+        .count();
+    let mut out = Vec::with_capacity(lines.len());
+    let (mut twins, mut words, mut endings) = (0, 0, 0);
+    let mut i = 0;
+    while i < lines.len() {
+        let mut j = i + 1;
+        while j < lines.len() && lines[j].at_ms == lines[i].at_ms {
+            j += 1;
+        }
+        if let [a, b] = &lines[i..j] {
+            let twin = match (
+                in_romanisable_script(&a.text),
+                in_romanisable_script(&b.text),
+            ) {
+                (true, false) => Some((a, b)),
+                (false, true) => Some((b, a)),
+                _ => None,
+            };
+            if let Some((original, roman)) = twin {
+                let (all, japanese_like) = japanese_endings(&roman.text);
+                words += all;
+                endings += japanese_like;
+                twins += 1;
+                out.push(crate::model::LyricLine {
+                    at_ms: original.at_ms,
+                    text: original.text.clone(),
+                    romanised: Some(roman.text.trim().to_owned()).filter(|r| !r.is_empty()),
+                });
+                i = j;
+                continue;
+            }
+            if a.text == b.text {
+                out.push(a.clone());
+                i = j;
+                continue;
+            }
+        }
+        out.extend(lines[i..j].iter().cloned());
+        i = j;
+    }
+    if twins * 2 > japanese && words > 0 && endings * 10 >= words * 7 {
+        lyrics.lines = out;
+    }
 }
 
 /// Ask one source for `track`'s lyrics. `Ok(None)` is a plain miss; an error is a source that
@@ -251,7 +389,7 @@ pub async fn fetch(
     api: &crate::api::Api,
     track: &crate::model::Track,
 ) -> anyhow::Result<Option<Lyrics>> {
-    match source {
+    let mut found = match source {
         Source::BetterLyrics => better_lyrics::lyrics(http, track).await,
         Source::YouTubeSynced => youtube::synced(http, &track.video_id).await,
         Source::Lrclib => Ok(lrclib::lyrics(http, track).await),
@@ -260,7 +398,11 @@ pub async fn fetch(
         Source::KuGou => kugou::lyrics(http, track).await,
         Source::Unison => unison::lyrics(http, track).await,
         Source::Genius => genius::lyrics(http, track).await,
+    }?;
+    if let Some(lyrics) = found.as_mut() {
+        pair_romaji(lyrics);
     }
+    Ok(found)
 }
 
 // Matching a search hit to the song, for the sources that search by name.
@@ -373,6 +515,7 @@ mod tests {
             lines: vec![LyricLine {
                 at_ms: 0,
                 text: "la".to_owned(),
+                romanised: None,
             }],
             synced,
             source: String::new(),
@@ -393,7 +536,7 @@ mod tests {
             (YouTubeSynced, Answer::Found(lyrics(true))),
             (Lrclib, Answer::Found(lyrics(true))),
         ]);
-        assert_eq!(pick(&order, &a), Pick::Use(YouTubeSynced));
+        assert_eq!(pick(&order, &a, false), Pick::Use(YouTubeSynced));
     }
 
     /// A lower source answering first doesn't jump ahead of one still out above it.
@@ -404,7 +547,7 @@ mod tests {
             (BetterLyrics, Answer::Pending),
             (Lrclib, Answer::Found(lyrics(true))),
         ]);
-        assert_eq!(pick(&order, &a), Pick::Wait);
+        assert_eq!(pick(&order, &a, false), Pick::Wait);
     }
 
     #[test]
@@ -414,19 +557,125 @@ mod tests {
             (YouTube, Answer::Found(lyrics(false))),
             (Lrclib, Answer::Pending),
         ]);
-        assert_eq!(pick(&order, &a), Pick::Wait);
+        assert_eq!(pick(&order, &a, false), Pick::Wait);
         a.insert(Lrclib, Answer::Found(lyrics(true)));
-        assert_eq!(pick(&order, &a), Pick::Use(Lrclib));
+        assert_eq!(pick(&order, &a, false), Pick::Use(Lrclib));
         a.insert(Lrclib, Answer::Missing);
-        assert_eq!(pick(&order, &a), Pick::Use(YouTube));
+        assert_eq!(pick(&order, &a, false), Pick::Use(YouTube));
     }
 
     #[test]
     fn nothing_anywhere_is_nothing() {
         let order = [YouTube, Lrclib];
         let a = answers(&[(YouTube, Answer::Missing), (Lrclib, Answer::Missing)]);
-        assert_eq!(pick(&order, &a), Pick::Nothing);
-        assert_eq!(pick(&[], &a), Pick::Nothing);
+        assert_eq!(pick(&order, &a, false), Pick::Nothing);
+        assert_eq!(pick(&[], &a, false), Pick::Nothing);
+    }
+
+    fn line(at_ms: u64, text: &str, romanised: Option<&str>) -> LyricLine {
+        LyricLine {
+            at_ms,
+            text: text.to_owned(),
+            romanised: romanised.map(str::to_owned),
+        }
+    }
+
+    fn synced(lines: Vec<LyricLine>) -> Lyrics {
+        Lyrics {
+            lines,
+            synced: true,
+            source: String::new(),
+        }
+    }
+
+    /// The song in Japanese, then again in romaji under the same stamps: each line gets its
+    /// romaji, and a line both halves share is kept once.
+    #[test]
+    fn romaji_twins_in_a_file_become_romanisations() {
+        let mut l = synced(crate::lyrics::lrclib::parse_lrc(
+            "[00:00.87]無敵の笑顔で荒らすメディア\n[00:03.78]知りたいその秘密ミステリアス\n\
+             [00:14.76](You're my savior)\n\
+             [00:00.87]Muteki no egao de arasu media\n[00:03.78]Shiritai sono himitsu misuteriasu\n\
+             [00:14.76](You're my savior)\n",
+        ));
+        pair_romaji(&mut l);
+        assert_eq!(l.lines.len(), 3);
+        assert_eq!(l.lines[0].text, "無敵の笑顔で荒らすメディア");
+        assert_eq!(
+            l.lines[0].romanised.as_deref(),
+            Some("Muteki no egao de arasu media")
+        );
+        assert_eq!(l.lines[2].text, "(You're my savior)");
+        assert_eq!(l.lines[2].romanised, None);
+    }
+
+    /// Romaji with English mixed in ("(Hey! Hey!)") still counts, and an empty twin leaves the
+    /// Japanese line on its own.
+    #[test]
+    fn romaji_with_shouts_in_it_still_pairs() {
+        let mut l = synced(crate::lyrics::lrclib::parse_lrc(
+            "[00:46.24]嘘か本当か知り得ない\n[00:49.43]そんな言葉にまた一人堕ちる\n\
+             [01:18.47]はいはいあの子は特別です\n\
+             [00:46.24]Uso ka hontou ka shirienai (Hey! Hey! Hey! Hey!)\n\
+             [00:49.43]Sonna kotoba ni mata hitori ochiru (Hey! Hey! Hey! Hey!)\n\
+             [01:18.47]\n",
+        ));
+        pair_romaji(&mut l);
+        assert_eq!(l.lines.len(), 3);
+        assert!(
+            l.lines[0]
+                .romanised
+                .as_deref()
+                .unwrap()
+                .starts_with("Uso ka")
+        );
+        assert_eq!(l.lines[2].text, "はいはいあの子は特別です");
+        assert_eq!(l.lines[2].romanised, None);
+    }
+
+    /// An English translation under the same stamps isn't romaji, and is left as lines.
+    #[test]
+    fn a_translation_twin_is_not_taken_for_romaji() {
+        let lrc = "[00:01.00]知りたいその秘密\n[00:01.00]I want to know that secret\n\
+                   [00:03.00]完璧で嘘つきな君は\n[00:03.00]You, perfect and a liar\n";
+        let mut l = synced(crate::lyrics::lrclib::parse_lrc(lrc));
+        pair_romaji(&mut l);
+        assert_eq!(l.lines.len(), 4);
+        assert!(!has_romanised(&l));
+    }
+
+    /// Romanisation on: Japanese without it stands in at once, and the first source that has
+    /// it takes over when it answers. Lyrics with nothing to romanise win as before.
+    #[test]
+    fn a_romanised_answer_takes_over_from_a_stand_in() {
+        let japanese = synced(vec![line(0, "無敵の笑顔", None)]);
+        let romaji = synced(vec![line(0, "無敵の笑顔", Some("Muteki no egao"))]);
+        let english = synced(vec![line(0, "Couldn't beat her smile", None)]);
+        let order = [YouTubeSynced, Lrclib, LrcRed];
+        let mut a = answers(&[
+            (YouTubeSynced, Answer::Found(japanese.clone())),
+            (Lrclib, Answer::Found(english)),
+            (LrcRed, Answer::Pending),
+        ]);
+        assert_eq!(
+            pick(&order, &a, true),
+            Pick::Use(YouTubeSynced),
+            "shown meanwhile"
+        );
+        assert_eq!(pick(&order, &a, false), Pick::Use(YouTubeSynced));
+        a.insert(LrcRed, Answer::Found(romaji));
+        assert_eq!(pick(&order, &a, true), Pick::Use(LrcRed));
+        assert_eq!(
+            pick(&order, &a, false),
+            Pick::Use(YouTubeSynced),
+            "off: order as ever"
+        );
+        a.insert(LrcRed, Answer::Missing);
+        assert_eq!(
+            pick(&order, &a, true),
+            Pick::Use(YouTubeSynced),
+            "none had it"
+        );
     }
 
     #[test]

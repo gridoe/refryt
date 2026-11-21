@@ -1487,14 +1487,30 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
     }
 
     let font = theme::semibold(m.lyrics);
+    // With romanisation on, a romanised line leads, big, and the original sits under it in the
+    // small type: the one most people read is the one that lights up.
+    let romanise = app.settings.lyrics_romanisation;
+    let lead = |line: &crate::model::LyricLine| -> String {
+        match line.romanised.as_ref().filter(|_| romanise) {
+            Some(roman) => roman.clone(),
+            None => line.text.clone(),
+        }
+    };
+    let under = |line: &crate::model::LyricLine| -> Option<String> {
+        line.romanised
+            .as_ref()
+            .filter(|_| romanise)
+            .map(|_| line.text.clone())
+    };
     let galleys: Vec<_> = lyrics
         .lines
         .iter()
         .map(|line| {
-            let text = if line.text.is_empty() {
+            let lead = lead(line);
+            let text = if lead.is_empty() {
                 "♪"
             } else {
-                line.text.as_str()
+                lead.as_str()
             };
             ui.painter().layout(
                 text.to_owned(),
@@ -1504,11 +1520,26 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
             )
         })
         .collect();
+    // The second, smaller line: the original under its romanisation.
+    let roman_font = theme::medium(m.lyrics * 0.55);
+    let roman_gap = m.line_gap * 0.12;
+    let romans: Vec<_> = lyrics
+        .lines
+        .iter()
+        .map(|line| {
+            under(line).map(|r| {
+                ui.painter()
+                    .layout(r, roman_font.clone(), Color32::PLACEHOLDER, rect.width())
+            })
+        })
+        .collect();
+    let height_of =
+        |i: usize| galleys[i].size().y + romans[i].as_ref().map_or(0.0, |r| roman_gap + r.size().y);
     let mut tops = Vec::with_capacity(galleys.len());
     let mut y = 0.0;
-    for galley in &galleys {
+    for i in 0..galleys.len() {
         tops.push(y);
-        y += galley.size().y + m.line_gap;
+        y += height_of(i) + m.line_gap;
     }
 
     // A test aid for debug builds: `REFRYT_PLAIN_LYRICS=1` shows timed lyrics as plain text, the
@@ -1527,20 +1558,35 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
         let mut child = ui.new_child(UiBuilder::new().max_rect(rect));
         let from = painted_so_far(&child);
         let plain_font = theme::semibold(m.lyrics * 0.75);
+        let plain_roman = theme::medium(m.lyrics * 0.45);
         let gap = m.line_gap * 0.55;
         let total: f32 = lyrics
             .lines
             .iter()
-            .map(|line| {
-                let text = if line.text.is_empty() {
+            .enumerate()
+            .map(|(i, line)| {
+                let lead = lead(line);
+                let text = if lead.is_empty() {
                     "♪".to_owned()
                 } else {
-                    line.text.clone()
+                    lead
                 };
+                let roman = romans[i].as_ref().map_or(0.0, |_| {
+                    ui.painter()
+                        .layout(
+                            under(line).unwrap_or_default(),
+                            plain_roman.clone(),
+                            Color32::PLACEHOLDER,
+                            rect.width(),
+                        )
+                        .size()
+                        .y
+                });
                 ui.painter()
                     .layout(text, plain_font.clone(), Color32::PLACEHOLDER, rect.width())
                     .size()
                     .y
+                    + roman
                     + gap
             })
             .sum();
@@ -1550,17 +1596,27 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
             .show(&mut child, |ui| {
                 // Words that all fit sit in the middle of their column.
                 ui.add_space(((rect.height() - total) / 2.0).max(0.0));
-                for line in &lyrics.lines {
-                    let text = if line.text.is_empty() {
+                for (i, line) in lyrics.lines.iter().enumerate() {
+                    let lead = lead(line);
+                    let text = if lead.is_empty() {
                         "♪"
                     } else {
-                        &line.text
+                        lead.as_str()
                     };
                     ui.label(
                         egui::RichText::new(text)
                             .font(plain_font.clone())
                             .color(p.text.gamma_multiply(0.85)),
                     );
+                    if romans[i].is_some()
+                        && let Some(roman) = under(line)
+                    {
+                        ui.label(
+                            egui::RichText::new(roman)
+                                .font(plain_roman.clone())
+                                .color(p.text.gamma_multiply(0.6)),
+                        );
+                    }
                     ui.add_space(gap);
                 }
             });
@@ -1634,7 +1690,7 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
     let mut clicked = None;
     for (i, galley) in galleys.iter().enumerate() {
         let top_y = anchor + tops[i] - view;
-        let height = galley.size().y;
+        let height = height_of(i);
         if top_y + height < rect.top() - 40.0 || top_y > rect.bottom() + 40.0 {
             continue;
         }
@@ -1650,6 +1706,13 @@ fn lyrics_column(app: &mut App, ui: &mut egui::Ui, m: &Metrics, rect: Rect, vide
         }
         let shown = ctx.animate_value_with_time(Id::new(("fs-lyric-a", i)), want, 0.28);
         painter.galley(line_rect.min, galley.clone(), p.text.gamma_multiply(shown));
+        if let Some(roman) = &romans[i] {
+            painter.galley(
+                line_rect.min + vec2(0.0, galley.size().y + roman_gap),
+                roman.clone(),
+                p.text.gamma_multiply(shown * 0.7),
+            );
+        }
         if response.clicked() {
             clicked = Some(lyrics.lines[i].at_ms);
         }

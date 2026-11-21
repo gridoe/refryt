@@ -1629,6 +1629,7 @@ impl Api {
                 .map(|l| model::LyricLine {
                     at_ms: 0,
                     text: l.trim_end().to_owned(),
+                    romanised: None,
                 })
                 .collect(),
             synced: false,

@@ -87,6 +87,7 @@ fn parse_timed(page: &Value) -> Option<Lyrics> {
             Some(LyricLine {
                 at_ms,
                 text: text.trim().to_owned(),
+                romanised: None,
             })
         })
         .collect();

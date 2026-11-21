@@ -961,6 +961,7 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
     // Discord Rich Presence. Nothing to configure: the app connects as its own Discord
     // application (the id is fixed in `crate::discord`), so the toggle is the whole setting.
     let mut discord = app.settings.discord_rich_presence;
+    let mut romanisation = app.settings.lyrics_romanisation;
     // The sources asked, in order, as a line under the row that opens the list.
     let lyrics_summary = {
         let asked = crate::lyrics::asked(&app.settings.lyrics_sources);
@@ -1024,6 +1025,17 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
         g.row(ui, "Lyrics sources", &lyrics_summary, |ui| {
             open_lyrics_sources = widgets::outline_button(ui, &p, "Change…").clicked();
         });
+        toggle_row(
+            g,
+            ui,
+            &p,
+            "setting-lyrics-romanisation",
+            "Prefer romanised lyrics",
+            "For Japanese, Korean and Chinese songs: lyrics in Latin letters, with the original \
+             under each line, from a source that has them (Apple Music's lyrics, or a lyrics \
+             file with romaji in it).",
+            &mut romanisation,
+        );
     });
 
     let ctx = ui.ctx().clone();
@@ -1034,6 +1046,7 @@ fn system(app: &mut App, ui: &mut egui::Ui) {
         }
         s.hide_tray_on_close = hide_tray;
         s.discord_rich_presence = discord;
+        s.lyrics_romanisation = romanisation;
     });
     if cast != on_here {
         app.set_cast_here(&ctx, cast);

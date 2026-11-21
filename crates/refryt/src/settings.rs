@@ -425,6 +425,10 @@ pub struct Settings {
     /// this build doesn't know and slots in sources added since the list was saved. Each source
     /// gets the song's details while lyrics are shown, so each is a switch: see PRIVACY.md.
     pub lyrics_sources: Vec<crate::lyrics::SourceChoice>,
+    /// "Prefer romanised lyrics": a source with romanised lines (romaji, Korean in Latin
+    /// letters, pinyin) wins for a song in those scripts, and its lines lead with the
+    /// romanisation, the original under it. Apple's lyrics carry it, and some LRC files do.
+    pub lyrics_romanisation: bool,
     /// Before there were several sources: whether LRCLIB was asked. Read from an older file,
     /// folded into [`Self::lyrics_sources`] by [`Settings::migrate_legacy`], never written back.
     #[serde(default, skip_serializing)]
@@ -492,6 +496,7 @@ impl Default for Settings {
             cast_receiver: false,
             cast_networks: Vec::new(),
             lyrics_sources: Vec::new(),
+            lyrics_romanisation: true,
             lrclib_lyrics: None,
             local_folders: Vec::new(),
             playlist_default_sort: crate::app::PlaylistSort::Default,

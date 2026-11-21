@@ -948,6 +948,9 @@ pub struct Lyrics {
 pub struct LyricLine {
     pub at_ms: u64,
     pub text: String,
+    /// The line in Latin letters (Japanese romaji, Korean, pinyin), when the source gave one:
+    /// only Apple's lyrics do. Shown with the line while "Prefer romanised lyrics" is on.
+    pub romanised: Option<String>,
 }
 
 /// A playlist id without its browse `VL` prefix. Browses want `VL{id}`; the edit endpoint
