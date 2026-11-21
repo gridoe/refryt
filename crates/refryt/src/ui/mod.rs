@@ -15,6 +15,7 @@ pub mod home_order;
 pub mod library;
 pub mod listening;
 pub mod lyrics;
+pub mod lyrics_sources;
 pub mod mood;
 pub mod moods;
 pub mod paste_cookies;

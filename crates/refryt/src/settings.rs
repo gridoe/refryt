@@ -420,10 +420,15 @@ pub struct Settings {
     /// The networks the cast receiver runs on (see `crate::network`). Turning casting on allows
     /// the network the computer is on; anywhere else it stays off until allowed there too.
     pub cast_networks: Vec<CastNetwork>,
-    /// Ask LRCLIB for synced lyrics. On by default; off, lyrics come from YouTube alone, as
-    /// plain text. LRCLIB gets the song's title, artist, album and length while the lyrics are
-    /// shown, so it is a switch: see PRIVACY.md.
-    pub lrclib_lyrics: bool,
+    /// The lyrics sources, in the order they are asked, each on or off (see [`crate::lyrics`]).
+    /// Empty is the default list. Read through [`crate::lyrics::normalise`], which drops names
+    /// this build doesn't know and slots in sources added since the list was saved. Each source
+    /// gets the song's details while lyrics are shown, so each is a switch: see PRIVACY.md.
+    pub lyrics_sources: Vec<crate::lyrics::SourceChoice>,
+    /// Before there were several sources: whether LRCLIB was asked. Read from an older file,
+    /// folded into [`Self::lyrics_sources`] by [`Settings::migrate_legacy`], never written back.
+    #[serde(default, skip_serializing)]
+    lrclib_lyrics: Option<bool>,
     /// Folders scanned for local audio files, shown in the Library's Local tab. Absolute paths,
     /// same shape as `playlist_order`.
     pub local_folders: Vec<String>,
@@ -486,7 +491,8 @@ impl Default for Settings {
             discord_rich_presence: false,
             cast_receiver: false,
             cast_networks: Vec::new(),
-            lrclib_lyrics: true,
+            lyrics_sources: Vec::new(),
+            lrclib_lyrics: None,
             local_folders: Vec::new(),
             playlist_default_sort: crate::app::PlaylistSort::Default,
             sidebar_width: None,
@@ -538,6 +544,14 @@ impl Settings {
     /// and flavour become the theme files they were turned into, and a custom theme picked over
     /// them goes to the polarity it declares. Idempotent; the old fields are never saved.
     pub fn migrate_legacy(&mut self, themes: &Themes) {
+        // LRCLIB switched off in the one-switch days stays off in the list.
+        if self.lrclib_lyrics.take() == Some(false) && self.lyrics_sources.is_empty() {
+            let list: Vec<_> = crate::lyrics::normalise(&[])
+                .into_iter()
+                .map(|(s, on)| (s, on && s != crate::lyrics::Source::Lrclib))
+                .collect();
+            self.lyrics_sources = crate::lyrics::to_choices(&list);
+        }
         if let Some(family) = self.scheme.take()
             && let Some((dark, light)) = legacy_names(&family, self.scheme_variant.as_deref())
         {
@@ -667,9 +681,42 @@ mod tests {
             partial.autoplay,
             "an older settings file without the toggle must still autoplay"
         );
+        assert_eq!(
+            crate::lyrics::asked(&partial.lyrics_sources),
+            crate::lyrics::Source::ALL.to_vec(),
+            "an older settings file asks every lyrics source"
+        );
+    }
+
+    /// LRCLIB switched off before there were several sources stays off; the others are on.
+    #[test]
+    fn lrclib_switched_off_stays_off_in_the_source_list() {
+        let mut old: Settings = serde_json::from_str(r#"{"lrclib_lyrics":false}"#).unwrap();
+        old.migrate_legacy(&Themes::default());
+        use crate::lyrics::Source::*;
+        assert_eq!(
+            crate::lyrics::asked(&old.lyrics_sources),
+            vec![
+                BetterLyrics,
+                LrcRed,
+                YouTubeSynced,
+                KuGou,
+                Unison,
+                YouTube,
+                Genius
+            ]
+        );
+        let json = serde_json::to_string(&old).unwrap();
         assert!(
-            partial.lrclib_lyrics,
-            "an older settings file without the toggle keeps synced lyrics"
+            !json.contains("lrclib_lyrics"),
+            "the old switch is not written back"
+        );
+
+        let mut on: Settings = serde_json::from_str(r#"{"lrclib_lyrics":true}"#).unwrap();
+        on.migrate_legacy(&Themes::default());
+        assert!(
+            on.lyrics_sources.is_empty(),
+            "on was the default: nothing to keep"
         );
     }
 

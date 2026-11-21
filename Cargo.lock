@@ -4882,6 +4882,7 @@ name = "refryt"
 version = "0.3.2"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "directories",
@@ -4909,6 +4910,7 @@ dependencies = [
  "refryt-resolve",
  "reqwest",
  "rfd",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha2",

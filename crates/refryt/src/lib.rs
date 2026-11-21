@@ -42,6 +42,7 @@ pub mod liked;
 pub mod listening_stats;
 pub mod local;
 pub mod local_playlists;
+pub mod lyrics;
 pub mod media;
 pub mod memory;
 /// The project's home on GitHub.

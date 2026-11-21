@@ -373,15 +373,13 @@ pub enum Event {
         playlist_id: String,
         error: String,
     },
-    /// Lyrics for the now-playing track: synced from LRCLIB when it had them, else plain text
-    /// from InnerTube.
-    LyricsLoaded {
+    /// One lyrics source's answer for a song: `Ok(Some)` its lyrics, `Ok(None)` none there,
+    /// `Err` the source could not be reached or read. One arrives per source asked; the app
+    /// picks among them (see [`crate::lyrics::pick`]).
+    LyricsSource {
         video_id: String,
-        lyrics: crate::model::Lyrics,
-    },
-    LyricsFailed {
-        video_id: String,
-        error: String,
+        source: crate::lyrics::Source,
+        found: Result<Option<crate::model::Lyrics>, String>,
     },
     /// A rating write was refused. The app updates optimistically, so this carries what to
     /// revert: the state is never left claiming something YouTube refused.
@@ -581,14 +579,14 @@ impl Event {
                 | Event::HomeShelfFailed { .. }
                 | Event::MoodPlaylistsLoaded { .. }
                 | Event::MoodPlaylistsFailed { .. }
-                | Event::LyricsLoaded { .. }
-                | Event::LyricsFailed { .. }
+                | Event::LyricsSource { .. }
         )
     }
 
     /// The error a failure carries, for the one question asked of all of them at once: does
     /// this read as having no connection? See [`crate::api::looks_offline`]. A local folder scan
-    /// failing is left out — the disk has nothing to say about the network.
+    /// failing is left out — the disk has nothing to say about the network — and so is a lyrics
+    /// source failing: one lyrics host being down says nothing about the connection.
     pub fn error(&self) -> Option<&str> {
         match self {
             Event::SearchFailed { error, .. }
@@ -618,7 +616,6 @@ impl Event {
             | Event::MixMoreFailed { error, .. }
             | Event::MixSeedFailed { error, .. }
             | Event::RadioFilterFailed { error, .. }
-            | Event::LyricsFailed { error, .. }
             | Event::RatingFailed { error, .. }
             | Event::LibraryToggleFailed { error, .. }
             | Event::PageLibraryFailed { error, .. }
@@ -655,51 +652,6 @@ async fn fetch_bytes(http: &reqwest::Client, url: &str) -> anyhow::Result<bytes:
         .await?)
 }
 
-/// LRCLIB's synced lyrics for a track, if it has them. No auth, one GET. `None` on any miss —
-/// the caller falls back to InnerTube's plain text.
-async fn lrclib(http: &reqwest::Client, track: &Track) -> Option<crate::model::Lyrics> {
-    let artist = track.artist_line();
-    let duration = track.duration.map(|d| d.to_string());
-    let mut query: Vec<(&str, &str)> = vec![
-        ("track_name", track.title.as_str()),
-        ("artist_name", artist.as_str()),
-    ];
-    if let Some(album) = track.album.as_deref() {
-        query.push(("album_name", album));
-    }
-    if let Some(duration) = duration.as_deref() {
-        query.push(("duration", duration));
-    }
-    let response = http
-        .get("https://lrclib.net/api/get")
-        .query(&query)
-        .send()
-        .await
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let body: serde_json::Value = response.json().await.ok()?;
-    if let Some(lrc) = body.get("syncedLyrics").and_then(serde_json::Value::as_str) {
-        let lines = parse_lrc(lrc);
-        if !lines.is_empty() {
-            return Some(crate::model::Lyrics {
-                lines,
-                synced: true,
-                source: "LRCLIB".to_owned(),
-            });
-        }
-    }
-    let plain = body
-        .get("plainLyrics")
-        .and_then(serde_json::Value::as_str)?;
-    Some(crate::model::Lyrics {
-        lines: plain_lines(plain),
-        synced: false,
-        source: "LRCLIB".to_owned(),
-    })
-}
-
 /// A single/album track's `wide: true` id points at a music-video upload, with no separate
 /// audio-only id anywhere in the album metadata itself — the typed and raw album parsers both
 /// read exactly one id per row (see `map_album`/`track_states`), so the only way to find the
@@ -724,60 +676,6 @@ async fn audio_alternative(api: &Api, track: &Track) -> Option<String> {
         }
         _ => None,
     })
-}
-
-/// Split plain text into lines, trimming the ends.
-fn plain_lines(text: &str) -> Vec<crate::model::LyricLine> {
-    text.lines()
-        .map(|l| crate::model::LyricLine {
-            at_ms: 0,
-            text: l.trim_end().to_owned(),
-        })
-        .collect()
-}
-
-/// Parse an LRC body (`[mm:ss.xx] line`) into sorted, timestamped lines. Malformed stamps are
-/// skipped rather than failing the whole set.
-fn parse_lrc(text: &str) -> Vec<crate::model::LyricLine> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if !line.starts_with('[') {
-            continue;
-        }
-        let Some(close) = line.find(']') else {
-            continue;
-        };
-        let Some(at_ms) = lrc_time_ms(&line[1..close]) else {
-            continue;
-        };
-        out.push(crate::model::LyricLine {
-            at_ms,
-            text: line[close + 1..].trim().to_owned(),
-        });
-    }
-    out.sort_by_key(|l| l.at_ms);
-    out
-}
-
-/// `mm:ss.xx` (or `.xxx`) to milliseconds. A two-digit fraction is hundredths.
-fn lrc_time_ms(stamp: &str) -> Option<u64> {
-    let (mm, rest) = stamp.split_once(':')?;
-    let mm: u64 = mm.trim().parse().ok()?;
-    let (ss, frac) = rest.split_once('.').unwrap_or((rest, ""));
-    let ss: u64 = ss.trim().parse().ok()?;
-    let frac: u64 = frac
-        .chars()
-        .take(3)
-        .collect::<String>()
-        .parse()
-        .unwrap_or(0);
-    let ms = match frac.to_string().len() {
-        1 => frac * 100,
-        2 => frac * 10,
-        _ => frac,
-    };
-    Some(mm * 60_000 + ss * 1000 + ms)
 }
 
 /// The `yt-dlp` binary to run.
@@ -2808,35 +2706,41 @@ impl Backend {
     // is `None` with no session — and the settings toggle is read per track, so flipping it
     // takes effect on the next song, not mid-song.
 
-    /// Fetch lyrics for `track`: LRCLIB's synced text first, InnerTube's plain text as fallback.
-    /// With `lrclib` off (the Settings switch), InnerTube's alone.
-    pub fn fetch_lyrics(&self, track: Track, lrclib: bool) {
-        let (tx, ctx, http, api) = (
-            self.tx.clone(),
-            self.ctx.clone(),
-            self.http.clone(),
-            Arc::clone(&self.api),
-        );
-        self.rt.spawn(async move {
-            let video_id = track.video_id.clone();
-            let synced = if lrclib {
-                self::lrclib(&http, &track).await
-            } else {
-                None
-            };
-            let lyrics = match synced {
-                Some(lyrics) => Some(lyrics),
-                None => api.lyrics(&track.video_id).await.unwrap_or(None),
-            };
-            let event = match lyrics {
-                Some(lyrics) => Event::LyricsLoaded { video_id, lyrics },
-                None => Event::LyricsFailed {
-                    video_id,
-                    error: "No lyrics found".to_owned(),
-                },
-            };
-            Self::emit(&tx, &ctx, event);
-        });
+    /// Ask each of `sources` for `track`'s lyrics, all at once. Each answers with its own
+    /// [`Event::LyricsSource`] as it lands, within [`crate::lyrics::SOURCE_TIMEOUT`].
+    pub fn fetch_lyrics(&self, track: Track, sources: Vec<crate::lyrics::Source>) {
+        for source in sources {
+            let (tx, ctx, http, api, track) = (
+                self.tx.clone(),
+                self.ctx.clone(),
+                self.http.clone(),
+                Arc::clone(&self.api),
+                track.clone(),
+            );
+            self.rt.spawn(async move {
+                let found = tokio::time::timeout(
+                    crate::lyrics::SOURCE_TIMEOUT,
+                    crate::lyrics::fetch(source, &http, &api, &track),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!("{} did not answer in time", source.label()))
+                })
+                .map_err(|e| format!("{e:#}"));
+                if let Err(error) = &found {
+                    debug!(source = source.label(), %error, "lyrics source failed");
+                }
+                Self::emit(
+                    &tx,
+                    &ctx,
+                    Event::LyricsSource {
+                        video_id: track.video_id.clone(),
+                        source,
+                        found,
+                    },
+                );
+            });
+        }
     }
 
     /// Fetch and decode a cover.
@@ -3115,25 +3019,6 @@ mod tests {
             parse_progress("/home/user/Music/refryt/Creep [id].webm"),
             None
         );
-    }
-
-    /// LRC stamps: two-digit fractions are hundredths, three are milliseconds, and a malformed
-    /// stamp is skipped rather than dropping the whole lyric set.
-    #[test]
-    fn lrc_times_parse_in_both_fraction_widths() {
-        assert_eq!(lrc_time_ms("00:12.34"), Some(12_340));
-        assert_eq!(lrc_time_ms("01:02.345"), Some(62_345));
-        assert_eq!(lrc_time_ms("02:00"), Some(120_000));
-        assert_eq!(lrc_time_ms("not a stamp"), None);
-    }
-
-    #[test]
-    fn lrc_lines_are_sorted_and_timed() {
-        let lines = parse_lrc("[00:20.00] second\nnoise\n[00:10.50] first\n");
-        assert_eq!(lines.len(), 2, "the header-less line is skipped");
-        assert_eq!(lines[0].text, "first");
-        assert_eq!(lines[0].at_ms, 10_500);
-        assert_eq!(lines[1].text, "second");
     }
 
     /// The tick fields land on the base, the session the base carries is untouched, and a base

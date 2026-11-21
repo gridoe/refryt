@@ -4,11 +4,13 @@
 //! width and insets the queue uses.
 
 use crate::app::App;
+use crate::lyrics::{Answer, Source};
 use crate::theme;
 use crate::widgets;
 
 pub fn panel(app: &mut App, ui: &mut egui::Ui) {
     let p = app.palette;
+    let picker = picker(app);
     // The card's own rect, before the header and list consume the ui: the corner repaint at
     // the end needs its rounded edges.
     let card = widgets::card_rect(ui.available_rect_before_wrap(), theme::CARD_INSET);
@@ -20,7 +22,9 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
         // of the way: without this the card's fill stopped short of its right edge. The loaded
         // lyrics fill it through their scroll area.
         ui.set_min_width(ui.available_width());
-        title(ui, &p);
+        if let Some(source) = title(ui, &p, picker.as_ref()) {
+            app.choose_lyrics_source(source);
+        }
         ui.horizontal(|ui| {
             ui.add_space(2.0);
             ui.vertical(|ui| widgets::skeleton_lines(ui, &p, 8));
@@ -28,7 +32,10 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     let Some(lyrics) = app.lyrics.as_ref() else {
-        title(ui, &p);
+        if let Some(source) = title(ui, &p, picker.as_ref()) {
+            app.choose_lyrics_source(source);
+            return;
+        }
         let message = app
             .lyrics_error
             .clone()
@@ -68,7 +75,7 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
     let output = area.show(ui, |ui| {
         // Inside the scroll: the title scrolls away with the lyrics rather than staying
         // pinned.
-        title(ui, &p);
+        let chosen = title(ui, &p, picker.as_ref());
         let mut clicked = None;
         for (i, line) in lyrics.lines.iter().enumerate() {
             // The gap goes before each line but the first, not after each: after the last
@@ -126,11 +133,14 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
                 );
             }
         }
-        clicked
+        (clicked, chosen)
     });
     // The title scrolls with the words, so at the top of the lyrics nothing fades there.
     widgets::fade_scroll_edges(ui, from, &output, widgets::scroll_fade(&app.settings));
-    let clicked = output.inner;
+    let (clicked, chosen) = output.inner;
+    if let Some(source) = chosen {
+        app.choose_lyrics_source(source);
+    }
     // A click on a synced line plays from where it starts.
     if let Some(at_ms) = clicked {
         app.seek_to(at_ms as f64 / 1000.0);
@@ -140,9 +150,50 @@ pub fn panel(app: &mut App, ui: &mut egui::Ui) {
     widgets::paint_corner_notches(ui, card, theme::CARD_INSET_X, &p);
 }
 
+/// The source picker beside the title: which source is shown, and the others that found
+/// lyrics for this song. Worked out before the lyrics are borrowed for drawing, so the pick
+/// can be applied to the app after.
+pub(crate) struct Picker {
+    current: String,
+    options: Vec<(Source, String)>,
+    busy: bool,
+}
+
+/// The picker for the song on screen, when more than one source was asked.
+pub(crate) fn picker(app: &App) -> Option<Picker> {
+    if app.lyrics_order.len() < 2 {
+        return None;
+    }
+    let current = match app.lyrics_shown {
+        Some(source) => source.short_label().to_owned(),
+        None if app.lyrics_loading => "Looking".to_owned(),
+        None => "Sources".to_owned(),
+    };
+    // Only sources that found lyrics: one with none, or still looking, isn't a choice. The
+    // spinner says some are still out.
+    let options = app
+        .lyrics_order
+        .iter()
+        .filter_map(|source| match app.lyrics_answers.get(source) {
+            Some(Answer::Found(l)) if l.synced => Some((*source, source.short_label().to_owned())),
+            Some(Answer::Found(_)) => {
+                Some((*source, format!("{} · no timing", source.short_label())))
+            }
+            _ => None,
+        })
+        .collect();
+    let busy = app.lyrics_answers.values().any(|a| *a == Answer::Pending);
+    Some(Picker {
+        current,
+        options,
+        busy,
+    })
+}
+
 /// The panel's own title, a hair right of the lyrics below it by eye — the same nudge the
-/// queue's own header takes.
-fn title(ui: &mut egui::Ui, p: &theme::Palette) {
+/// queue's own header takes — and the source picker at the right. Returns a source picked.
+fn title(ui: &mut egui::Ui, p: &theme::Palette, picker: Option<&Picker>) -> Option<Source> {
+    let mut chosen = None;
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.add_space(2.0);
@@ -151,6 +202,25 @@ fn title(ui: &mut egui::Ui, p: &theme::Palette) {
                 .font(theme::semibold(14.0))
                 .color(p.text),
         );
+        if let Some(picker) = picker {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // The same quiet "label ▾" as the queue's radio filter.
+                ui.add_space(2.0);
+                let labels: Vec<&str> = picker.options.iter().map(|o| o.1.as_str()).collect();
+                if let Some(i) = widgets::text_dropdown(
+                    ui,
+                    p,
+                    egui::Id::new("lyrics-source"),
+                    &picker.current,
+                    &labels,
+                    picker.busy,
+                ) && let Some((source, _)) = picker.options.get(i)
+                {
+                    chosen = Some(*source);
+                }
+            });
+        }
     });
     ui.add_space(8.0);
+    chosen
 }

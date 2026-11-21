@@ -1773,6 +1773,17 @@ pub struct App {
     /// Which video the current lyrics (or in-flight request) belong to, so a reply for a track
     /// already left behind is dropped.
     lyrics_for: Option<String>,
+    /// What each source asked has said about [`Self::lyrics_for`] so far, and the order they
+    /// were asked in: the automatic pick reads them in that order.
+    pub(crate) lyrics_answers:
+        std::collections::HashMap<crate::lyrics::Source, crate::lyrics::Answer>,
+    pub(crate) lyrics_order: Vec<crate::lyrics::Source>,
+    /// The source whose lyrics are in [`Self::lyrics`].
+    pub(crate) lyrics_shown: Option<crate::lyrics::Source>,
+    /// Songs whose source the listener picked in the lyrics panel, this session.
+    lyrics_choice: std::collections::HashMap<String, crate::lyrics::Source>,
+    /// The "Lyrics sources" window, opened from Settings.
+    pub(crate) lyrics_sources_open: bool,
     /// The playlist rename editor, when open.
     pub(crate) playlist_edit: Option<PlaylistEditor>,
     /// A playlist awaiting delete confirmation: its id and title.
@@ -2309,6 +2320,11 @@ impl App {
             lyrics_loading: false,
             lyrics_error: None,
             lyrics_for: None,
+            lyrics_answers: std::collections::HashMap::new(),
+            lyrics_order: Vec::new(),
+            lyrics_shown: None,
+            lyrics_choice: std::collections::HashMap::new(),
+            lyrics_sources_open: false,
             playlist_edit: None,
             playlist_delete: None,
             playlist_duplicate: None,
@@ -2662,6 +2678,14 @@ impl App {
             let order = crate::model::normalise_order(&self.settings.home_order);
             let shelves: &mut Vec<crate::model::Shelf> = Arc::make_mut(home);
             crate::model::order_home(shelves, &order);
+        }
+        // A changed source list asks again for the song on screen, so turning a source on (or
+        // off) shows at once rather than from the next song.
+        if self.settings.lyrics_sources != before.lyrics_sources
+            && self.lyrics_wanted()
+            && let Some(track) = self.now.track.clone()
+        {
+            self.fetch_lyrics(track);
         }
         if self.settings.cache_songs != before.cache_songs {
             self.backend
@@ -6405,22 +6429,25 @@ impl App {
                         }
                     }
                 }
-                Event::LyricsLoaded { video_id, lyrics }
-                    if self.lyrics_for.as_deref() == Some(video_id.as_str()) =>
-                {
-                    self.lyrics_loading = false;
-                    self.lyrics_error = None;
-                    self.lyrics = Some(lyrics);
+                Event::LyricsSource {
+                    video_id,
+                    source,
+                    found,
+                } if self.lyrics_for.as_deref() == Some(video_id.as_str()) => {
+                    let answer = match found {
+                        Ok(Some(lyrics)) if !lyrics.lines.is_empty() => {
+                            crate::lyrics::Answer::Found(lyrics)
+                        }
+                        Ok(_) => crate::lyrics::Answer::Missing,
+                        Err(error) => {
+                            tracing::debug!(%video_id, source = source.label(), %error, "lyrics source failed");
+                            crate::lyrics::Answer::Missing
+                        }
+                    };
+                    self.lyrics_answers.insert(source, answer);
+                    self.show_lyrics();
                 }
-                Event::LyricsFailed { video_id, error }
-                    if self.lyrics_for.as_deref() == Some(video_id.as_str()) =>
-                {
-                    tracing::debug!(%video_id, %error, "no lyrics");
-                    self.lyrics_loading = false;
-                    self.lyrics = None;
-                    self.lyrics_error = Some(error);
-                }
-                Event::LyricsLoaded { .. } | Event::LyricsFailed { .. } => {}
+                Event::LyricsSource { .. } => {}
                 Event::MixMore { token, queue } => {
                     self.radio_loading = false;
                     // A newer river may have opened while this was in flight — appending
@@ -7193,16 +7220,85 @@ impl App {
         }
     }
 
-    /// Start a lyrics request for `track`, replacing whatever is shown. The `lyrics_for` guard
-    /// drops the reply if the track changes before it lands.
+    /// Start a lyrics request for `track`, replacing whatever is shown: every ticked source is
+    /// asked at once. The `lyrics_for` guard drops answers for a track already left behind.
     fn fetch_lyrics(&mut self, track: Track) {
         self.lyrics_for = Some(track.video_id.clone());
         self.lyrics = None;
+        self.lyrics_shown = None;
         self.lyrics_error = None;
-        self.lyrics_loading = true;
         self.lyrics_scroll_reset = true;
-        self.backend
-            .fetch_lyrics(track, self.settings.lrclib_lyrics);
+        self.lyrics_order = crate::lyrics::asked(&self.settings.lyrics_sources);
+        self.lyrics_answers = self
+            .lyrics_order
+            .iter()
+            .map(|s| (*s, crate::lyrics::Answer::Pending))
+            .collect();
+        if self.lyrics_order.is_empty() {
+            self.lyrics_loading = false;
+            self.lyrics_error =
+                Some("Every lyrics source is off. Turn one on in Settings.".to_owned());
+            return;
+        }
+        self.lyrics_loading = true;
+        self.backend.fetch_lyrics(track, self.lyrics_order.clone());
+    }
+
+    /// Show what the answers so far call for: the source picked for this song in the panel, if
+    /// it found lyrics, else the automatic pick (see [`crate::lyrics::pick`]).
+    fn show_lyrics(&mut self) {
+        let chosen = self
+            .lyrics_for
+            .as_ref()
+            .and_then(|id| self.lyrics_choice.get(id))
+            .copied()
+            .filter(|s| {
+                matches!(
+                    self.lyrics_answers.get(s),
+                    Some(crate::lyrics::Answer::Found(_))
+                )
+            });
+        let pick = match chosen {
+            Some(source) => crate::lyrics::Pick::Use(source),
+            None => crate::lyrics::pick(&self.lyrics_order, &self.lyrics_answers),
+        };
+        match pick {
+            crate::lyrics::Pick::Wait => {}
+            crate::lyrics::Pick::Use(source) => {
+                if self.lyrics_shown != Some(source)
+                    && let Some(crate::lyrics::Answer::Found(lyrics)) =
+                        self.lyrics_answers.get(&source)
+                {
+                    tracing::debug!(
+                        video_id = self.lyrics_for.as_deref().unwrap_or_default(),
+                        source = source.label(),
+                        synced = lyrics.synced,
+                        lines = lyrics.lines.len(),
+                        "lyrics shown"
+                    );
+                    self.lyrics = Some(lyrics.clone());
+                    self.lyrics_shown = Some(source);
+                    self.lyrics_scroll_reset = true;
+                }
+                self.lyrics_loading = false;
+                self.lyrics_error = None;
+            }
+            crate::lyrics::Pick::Nothing => {
+                self.lyrics = None;
+                self.lyrics_shown = None;
+                self.lyrics_loading = false;
+                self.lyrics_error = Some("No lyrics found".to_owned());
+            }
+        }
+    }
+
+    /// The listener picked `source` in the lyrics panel: show its lyrics for this song, and
+    /// keep to it if the song comes back this session.
+    pub(crate) fn choose_lyrics_source(&mut self, source: crate::lyrics::Source) {
+        if let Some(id) = self.lyrics_for.clone() {
+            self.lyrics_choice.insert(id, source);
+            self.show_lyrics();
+        }
     }
 
     /// Put `track` straight after the playing one, in the list and in a shuffle's order.
@@ -9167,6 +9263,7 @@ impl eframe::App for App {
         ui::playlist::modals(self, ui);
         ui::help::modal(self, ui);
         ui::home_order::modal(self, ui);
+        ui::lyrics_sources::modal(self, ui);
         ui::paste_cookies::modal(self, ui);
         ui::crash::modal(self, ui);
         ui::update::modal(self, ui);

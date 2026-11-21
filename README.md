@@ -201,7 +201,7 @@ Sign in from the app's own window, or use Import from browser on Home or in Sett
 
 Settings, themes, the session and the log live in `~/.config/refryt` on Linux, `~/Library/Application Support/refryt` on macOS and `~/.var/app/io.github.gridoe.refryt/config/refryt` in the Flatpak. The session is stored with owner-only permissions.
 
-There is no telemetry. refryt connects to YouTube, [LRCLIB](https://lrclib.net) for lyrics, GitHub for the update check, and Discord's local client if Rich Presence is on. LRCLIB and the update check can be turned off in Settings. Crash reports stay on disk until you choose to copy or file them. [PRIVACY.md](PRIVACY.md) has the details.
+There is no telemetry. refryt connects to YouTube and a few lyrics sites (BetterLyrics, lrc.red, LRCLIB, KuGou, Unison and Genius) for lyrics, GitHub for the update check, and Discord's local client if Rich Presence is on. Each lyrics source and the update check can be turned off in Settings. Crash reports stay on disk until you choose to copy or file them. [PRIVACY.md](PRIVACY.md) has the details.
 
 ## Status
 
@@ -229,7 +229,8 @@ Built with Rust and [egui](https://github.com/emilk/egui), [mpv](https://mpv.io/
   runs out.
 - **Spotify's desktop app**: the shortcuts, select-then-play clicks, and the shape of the
   album, playlist and artist pages.
-- **[LRCLIB](https://lrclib.net)**: the synced lyrics.
+- **[BetterLyrics](https://github.com/better-lyrics/better-lyrics)**, **[lrc.red](https://lrc.red)**, **[LRCLIB](https://lrclib.net)**, **[KuGou](https://www.kugou.com)**, **Unison** and **[Genius](https://genius.com)**: lyrics.
+- **[BitChord](https://github.com/kushagrasinghx/BitChord)**: lyrics from several sources, tried in an order you set.
 - **Theme palettes**: [Catppuccin](https://github.com/catppuccin/palette),
   [Nord](https://www.nordtheme.com/docs/colors-and-palettes),
   [Gruvbox](https://github.com/morhetz/gruvbox),
