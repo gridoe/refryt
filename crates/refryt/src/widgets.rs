@@ -2788,13 +2788,14 @@ pub fn track_row<'a>(ui: &mut Ui, palette: &Palette, row: TrackRow<'a>) -> RowCl
                 );
             }
         } else if !narrow && let Some(n) = number {
-            // The numbers are right-aligned to this edge, so what takes a number's place ends
-            // there too: centred in the whole column it sat right of every number and reached
-            // into the gap before the title.
+            // The numbers are right-aligned to this edge. What takes a number's place is
+            // centred on a one-digit number, the usual case: centred in the whole column it sat
+            // right of every number, and ending at this edge put it left of most of them.
             let number_right = rect.left() + left_inset + num_w - theme::ROW_NUMBER_GAP;
             let glyph = 14.0;
-            let in_place = Rect::from_min_size(
-                egui::pos2(number_right - glyph, rect.center().y - glyph / 2.0),
+            let digit = text_width(ui, "0", &theme::regular(12.0));
+            let in_place = Rect::from_center_size(
+                egui::pos2(number_right - digit / 2.0, rect.center().y),
                 vec2(glyph, glyph),
             );
             if loading && hide_art {
