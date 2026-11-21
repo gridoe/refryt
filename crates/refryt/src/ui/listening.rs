@@ -150,7 +150,7 @@ fn ago(elapsed: std::time::Duration) -> String {
     }
 }
 
-fn quiet_line(app: &App, ui: &mut egui::Ui, text: &str) {
+pub(crate) fn quiet_line(app: &App, ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .font(theme::regular(13.0))
@@ -271,10 +271,10 @@ pub(crate) fn history_gap_note(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-struct Tile {
-    label: &'static str,
-    value: String,
-    delta: Option<Delta>,
+pub(crate) struct Tile {
+    pub label: &'static str,
+    pub value: String,
+    pub delta: Option<Delta>,
 }
 
 fn totals(app: &App, ui: &mut egui::Ui, report: &Report) {
@@ -338,7 +338,7 @@ fn streaks(app: &App, ui: &mut egui::Ui, report: &Report) {
 }
 
 /// A row of tiles, wrapping two by two where four would be cramped.
-fn tiles(ui: &mut egui::Ui, p: &theme::Palette, tiles: &[Tile]) {
+pub(crate) fn tiles(ui: &mut egui::Ui, p: &theme::Palette, tiles: &[Tile]) {
     let width = ui.available_width();
     let columns = if width < FOUR_TILES_WIDTH {
         tiles.len().min(2)
@@ -471,7 +471,7 @@ fn top_list(app: &mut App, ui: &mut egui::Ui, list: TopList, items: &[crate::mod
         .inner;
     ui.add_space(8.0);
     ui.push_id(title, |ui| {
-        crate::ui::ranked_entry_rows(app, ui, &items[..items.len().min(TOP_SHOWN)]);
+        crate::ui::ranked_stats_rows(app, ui, &items[..items.len().min(TOP_SHOWN)]);
     });
     if show_all {
         app.navigate(Route::StatsTop(list));
@@ -502,14 +502,14 @@ pub fn top_page(app: &mut App, ui: &mut egui::Ui, list: TopList) {
         if items.is_empty() {
             quiet_line(app, ui, "Nothing played in this range.");
         } else {
-            crate::ui::ranked_entry_rows(app, ui, items);
+            crate::ui::ranked_stats_rows(app, ui, items);
         }
         ui.add_space(24.0);
     });
 }
 
 /// Plays over time. A bar's date and count show on hovering it; the ends are labelled below.
-fn bar_chart(ui: &mut egui::Ui, p: &theme::Palette, bars: &[Bar]) {
+pub(crate) fn bar_chart(ui: &mut egui::Ui, p: &theme::Palette, bars: &[Bar]) {
     let width = ui.available_width();
     let label_height = 20.0;
     let (rect, response) =

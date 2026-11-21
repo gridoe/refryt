@@ -6,6 +6,7 @@ pub mod artist;
 pub mod artist_liked;
 pub mod charts;
 pub mod crash;
+pub mod entity_stats;
 pub mod explore;
 pub mod fullscreen;
 pub mod help;
@@ -426,6 +427,8 @@ pub(crate) enum RowAction {
     AddToQueue(Track),
     GoToAlbum(String),
     GoToArtist(String),
+    /// Open a song's listening stats page.
+    SongStats(String),
     /// Copy a song's link.
     CopyLink(String),
     Rate {
@@ -2194,6 +2197,8 @@ const DESCRIPTION_AIR: f32 = 6.0;
 // ~9.4pt of lead, so 19pt of centres reads as ~10pt of space between the ink: one block,
 // not two paragraphs.
 const LINE_GAP: f32 = 19.0;
+/// The artist page's audience line, and the stats page's rank: a point over the other credits.
+const SECOND_PLAIN_PT: f32 = 14.0;
 
 /// One header for the album, playlist and artist pages: wash, art, type line, title, artist
 /// line, meta, and — for the releases — the Play / Save / ••• row on its own baseline.
@@ -2396,8 +2401,8 @@ pub(crate) fn page_header(
             ui.painter().text(
                 egui::pos2(tx, y),
                 egui::Align2::LEFT_CENTER,
-                widgets::truncate_to(ui, plain, theme::regular(13.0), text_w),
-                theme::regular(13.0),
+                widgets::truncate_to(ui, plain, theme::regular(SECOND_PLAIN_PT), text_w),
+                theme::regular(SECOND_PLAIN_PT),
                 palette.secondary,
             );
             last_line = y;
@@ -3005,13 +3010,14 @@ pub(crate) fn entry_row_spec<'a>(
 /// shelves want this even for a shelf that is entirely songs, unlike Home/Explore's shelves,
 /// which render every kind as cards.
 pub(crate) fn entry_rows(app: &mut crate::app::App, ui: &mut egui::Ui, items: &[Entry]) {
-    entry_rows_with(app, ui, items, &[]);
+    entry_rows_with(app, ui, items, &[], false);
 }
 
-/// [`entry_rows`] with each row's place in the list where its number would go.
-pub(crate) fn ranked_entry_rows(app: &mut crate::app::App, ui: &mut egui::Ui, items: &[Entry]) {
+/// [`entry_rows`] for Stats' lists, each row's place where its number would go. A row opens
+/// that song's or artist's stats page, where Play and their own page are a click away.
+pub(crate) fn ranked_stats_rows(app: &mut crate::app::App, ui: &mut egui::Ui, items: &[Entry]) {
     let ranks: Vec<String> = (1..=items.len()).map(|n| n.to_string()).collect();
-    entry_rows_with(app, ui, items, &ranks);
+    entry_rows_with(app, ui, items, &ranks, true);
 }
 
 fn entry_rows_with(
@@ -3019,6 +3025,7 @@ fn entry_rows_with(
     ui: &mut egui::Ui,
     items: &[Entry],
     ranks: &[String],
+    to_stats: bool,
 ) {
     let signed_in = app.signed_in();
     let clicked = {
@@ -3058,6 +3065,13 @@ fn entry_rows_with(
         app.row_action(action);
     }
     match clicked.click {
+        Some(ListClick::Row(i)) if to_stats => match &items[i] {
+            Entry::Song(t) | Entry::Video(t) => {
+                app.navigate(Route::StatsSong(t.video_id.clone()));
+            }
+            Entry::Artist(a) => app.navigate(Route::StatsArtist(a.name.to_lowercase())),
+            _ => {}
+        },
         Some(ListClick::Row(i)) => match &items[i] {
             Entry::Song(_) | Entry::Video(_) => {
                 if let Some(index) = playable_index(items, i) {

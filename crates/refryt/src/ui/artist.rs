@@ -63,22 +63,25 @@ pub fn page(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
-/// The hero when the page carries wide channel art, the circle header otherwise, then the
-/// controls on their own row below either.
-/// How many times you've played the artist on the page, once there's anything to say.
+/// Your listening to the artist on the page — a top rank, or else your plays — once there's
+/// anything to say.
 fn your_plays(app: &App) -> Option<String> {
-    let (id, plays) = app.artist_plays.as_ref()?;
-    (*plays > 0 && app.artist_for.as_deref() == Some(id.as_str()))
-        .then(|| crate::listening_stats::plays_label(*plays))
+    let (id, highlight) = app.artist_plays.as_ref()?;
+    if app.artist_for.as_deref() != Some(id.as_str()) {
+        return None;
+    }
+    highlight.line()
 }
 
 fn with_your_plays(audience: String, yours: Option<String>) -> String {
     match yours {
-        Some(plays) => format!("{audience} • {plays} by you"),
+        Some(yours) => format!("{audience} • {yours}"),
         None => audience,
     }
 }
 
+/// The hero when the page carries wide channel art, the circle header otherwise, then the
+/// controls on their own row below either.
 fn header(app: &mut App, ui: &mut egui::Ui) {
     let has_hero = app.artist.as_ref().is_some_and(|a| a.hero.is_some());
     if has_hero {
@@ -457,7 +460,7 @@ fn hero_header(app: &mut App, ui: &mut egui::Ui) {
     // with every other page's header. White, because the scrim is dark whatever the theme is.
     let (name_y, meta_y, name_size) = hero_text_lines(rect, width);
     let name_font = crate::theme::bold(name_size);
-    let meta_font = crate::theme::medium(14.0);
+    let meta_font = crate::theme::medium(15.0);
     let text_w = (width - inset_x - 24.0).max(0.0);
     crate::emoji::paint_line(
         ui,
@@ -622,6 +625,9 @@ fn action_row(app: &mut App, ui: &mut egui::Ui) {
     let mut play_clicked = false;
     let mut play_target = None;
     let mut subscribe_to = None;
+    // Played here before: their stats page is a button away.
+    let has_plays = your_plays(app).is_some();
+    let mut open_stats = None;
     let (menu_action, menu_description) = {
         let crate::app::App {
             palette,
@@ -660,6 +666,13 @@ fn action_row(app: &mut App, ui: &mut egui::Ui) {
                     .clicked()
             {
                 play_target = Some(target.clone());
+            }
+            if has_plays
+                && widgets::icon_button(ui, &p, crate::icons::Icon::ChartColumn, 18.0, false)
+                    .hint("Your stats")
+                    .clicked()
+            {
+                open_stats = Some(a.name.to_lowercase());
             }
             ui.add_space(6.0);
             // Your own channel has no subscription to toggle — YouTube refuses the write with a
@@ -763,6 +776,9 @@ fn action_row(app: &mut App, ui: &mut egui::Ui) {
     }
     if let Some((subscribe, params)) = subscribe_to {
         app.toggle_subscribed(&id, subscribe, params);
+    }
+    if let Some(name) = open_stats {
+        app.navigate(crate::app::Route::StatsArtist(name));
     }
     match menu_action {
         Some(crate::ui::RowAction::PageInfo) => app.page_info = menu_description,
