@@ -13,6 +13,12 @@ use crate::widgets;
 
 const ROW: f32 = 64.0;
 const WIDTH: f32 = 480.0;
+/// The Done / Reset row: a chip's height.
+const BUTTONS: f32 = 32.0;
+const TITLE: &str = "Lyrics sources";
+const INTRO: &str = "All the sources that are on are asked at once. The first one in this list \
+                     with timed lyrics is shown. Drag a source to move it. A source that's off \
+                     is never contacted.";
 
 /// The list after dragging row `from` onto row `to`, as `home_order::moved` does it.
 fn moved(list: &[(Source, bool)], from: usize, to: usize) -> Vec<(Source, bool)> {
@@ -34,9 +40,23 @@ pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
     let p = app.palette;
     let list = lyrics::normalise(&app.settings.lyrics_sources);
     let width = WIDTH.min(screen.width() - 40.0);
-    // Padding, title, line, gaps and buttons around the rows; the rows scroll when the window
-    // is too short for all of them.
-    let chrome = 16.0 + 22.0 + 6.0 + 36.0 + 12.0 + 12.0 + 30.0 + 16.0;
+    // The title and the line under it, measured at the card's width, so the card fits its
+    // words; then padding, gaps and the buttons. The rows scroll when the window is too short
+    // for all of them.
+    let words = |text: &str, font: egui::FontId| {
+        ui.painter()
+            .layout(text.to_owned(), font, p.text, width - 32.0)
+            .size()
+            .y
+    };
+    let chrome = 16.0
+        + words(TITLE, theme::semibold(15.0))
+        + 6.0
+        + words(INTRO, theme::regular(12.0))
+        + 12.0
+        + 12.0
+        + BUTTONS
+        + 16.0;
     let height = (chrome + ROW * list.len() as f32).min(screen.height() - 40.0);
     let rows_height = (height - chrome).max(ROW);
 
@@ -86,19 +106,15 @@ pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
             );
             body.spacing_mut().item_spacing.y = 0.0;
             body.label(
-                egui::RichText::new("Lyrics sources")
+                egui::RichText::new(TITLE)
                     .font(theme::semibold(15.0))
                     .color(p.text),
             );
             body.add_space(6.0);
             body.label(
-                egui::RichText::new(
-                    "All the sources that are on are asked at once. The first one in this list \
-                     with timed lyrics is shown. Drag a source to move it. A source that's off \
-                     is never contacted.",
-                )
-                .font(theme::regular(12.0))
-                .color(p.secondary),
+                egui::RichText::new(INTRO)
+                    .font(theme::regular(12.0))
+                    .color(p.secondary),
             );
             body.add_space(12.0);
 
@@ -165,9 +181,16 @@ pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
                             egui::vec2(40.0, 22.0),
                         );
                         let mut value = *on;
-                        body.scope_builder(egui::UiBuilder::new().max_rect(switch), |ui| {
-                            widgets::toggle(ui, &p, ui.id().with(("lyrics-source", i)), &mut value);
-                        });
+                        // A child of its own, not `scope_builder`: in this top-down list a scope
+                        // moves the cursor to below the switch, mid-row, and every row after
+                        // it started 21pt inside the one before.
+                        let mut cell = body.new_child(egui::UiBuilder::new().max_rect(switch));
+                        widgets::toggle(
+                            &mut cell,
+                            &p,
+                            egui::Id::new(("lyrics-source", i)),
+                            &mut value,
+                        );
                         if value != *on {
                             flipped = Some(i);
                         }
@@ -196,7 +219,7 @@ pub(crate) fn modal(app: &mut App, ui: &mut egui::Ui) {
                 });
 
             body.add_space(12.0);
-            body.allocate_ui(egui::vec2(body.available_width(), 30.0), |ui| {
+            body.allocate_ui(egui::vec2(body.available_width(), BUTTONS), |ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if widgets::chip(ui, &p, "Done", true).clicked() {
                         close = true;
