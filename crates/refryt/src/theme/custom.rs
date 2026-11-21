@@ -58,9 +58,25 @@ pub struct Themes {
     pub themes: Vec<CustomTheme>,
     /// `(file name, reason)` for each file that failed to parse.
     pub errors: Vec<(String, String)>,
+    /// The desktop's GTK and Qt themes ([`super::system`]), kept apart from the files: they
+    /// are read from the desktop, not the folder, and offered in both modes.
+    pub system: Vec<CustomTheme>,
 }
 
 impl Themes {
+    /// A desktop theme by name: the variant of this polarity if there is one, else the only
+    /// one, since following the desktop means its colours whatever the mode.
+    pub fn system_theme(&self, name: &str, dark: bool) -> Option<&CustomTheme> {
+        let named = || self.system.iter().filter(move |t| t.name == name);
+        named().find(|t| t.dark == dark).or_else(|| named().next())
+    }
+
+    /// Replace the desktop themes called `name` with `fresh`.
+    pub fn set_system(&mut self, name: &str, fresh: Vec<CustomTheme>) {
+        self.system.retain(|t| t.name != name);
+        self.system.extend(fresh);
+    }
+
     pub fn get(&self, name: &str) -> Option<&CustomTheme> {
         self.themes.iter().find(|t| t.name == name)
     }
@@ -436,7 +452,7 @@ pub fn parse(name: &str, src: &str) -> Result<CustomTheme, String> {
     })
 }
 
-fn hex(c: u32) -> Color32 {
+pub(super) fn hex(c: u32) -> Color32 {
     Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 
@@ -500,7 +516,7 @@ fn declarations(src: &str) -> Vec<(usize, String)> {
 }
 
 /// `#rgb`, `#rrggbb`, or `rgb(r, g, b)` / `rgb(r g b)`.
-fn parse_colour(value: &str) -> Option<u32> {
+pub(super) fn parse_colour(value: &str) -> Option<u32> {
     let v = value.trim();
     if let Some(h) = v.strip_prefix('#') {
         let h: String = match h.len() {
@@ -827,7 +843,7 @@ mod tests {
     fn a_theme_is_found_however_its_name_is_typed() {
         let themes = Themes {
             themes: builtins(),
-            errors: Vec::new(),
+            ..Themes::default()
         };
         for q in [
             "catppuccin-frappe",

@@ -1440,6 +1440,8 @@ pub struct App {
     pub(crate) custom_themes: theme::custom::Themes,
     /// Raised by the folder watcher when a theme file is added, removed or saved.
     theme_watch: theme::custom::Watcher,
+    /// The GTK colours, read off the UI thread (`theme::system`).
+    gtk_watch: theme::system::GtkWatch,
     /// Whether the window had focus on the last frame, to notice it coming back.
     was_focused: bool,
     history: History,
@@ -2094,7 +2096,17 @@ impl App {
         // names a theme, so an old settings file and `--scheme` both resolve against it.
         theme::custom::seed();
         widgets::init_reduced_motion();
-        let custom_themes = theme::custom::load();
+        let mut custom_themes = theme::custom::load();
+        // The desktop's themes. GTK takes a child process: waited for only when it is the theme
+        // about to paint, so the first frame isn't another theme's; otherwise read in the
+        // background once the app is up.
+        custom_themes.set_system(theme::system::QT, theme::system::qt().into_iter().collect());
+        let gtk_now = [&settings.dark_theme, &settings.light_theme]
+            .iter()
+            .any(|n| n.as_str() == theme::system::GTK);
+        if gtk_now {
+            custom_themes.set_system(theme::system::GTK, theme::system::gtk());
+        }
         for (file, error) in &custom_themes.errors {
             tracing::warn!(%file, %error, "custom theme did not load");
         }
@@ -2165,6 +2177,7 @@ impl App {
             palette,
             custom_themes,
             theme_watch,
+            gtk_watch: theme::system::GtkWatch::default(),
             was_focused: true,
             // Open on Home, as YouTube Music does — it is a real feed now rather than a page we
             // assembled. `--search` starts on Search, and `--page` overrides both.
@@ -2419,6 +2432,9 @@ impl App {
             local_browse_path: Vec::new(),
             local_playlists: crate::local_playlists::load(),
         };
+        if !gtk_now {
+            app.gtk_watch.refresh(&cc.egui_ctx);
+        }
         app.resync_local_playlists();
         if !app.settings.local_folders.is_empty() {
             app.local_scanning = true;
@@ -2621,14 +2637,32 @@ impl App {
     fn reload_custom_themes(&mut self, ctx: &egui::Context) {
         // The way back from an editor: the window is focused again, so look at the folder.
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(false));
+        let mut themes = None;
         if focused && !self.was_focused {
             self.theme_watch.check();
+            // The desktop's theme may have changed meanwhile too.
+            self.gtk_watch.refresh(ctx);
+            let mut t = self.custom_themes.clone();
+            t.set_system(theme::system::QT, theme::system::qt().into_iter().collect());
+            themes = Some(t);
         }
         self.was_focused = focused;
-        if !self.theme_watch.take_changed() {
-            return;
+        if let Some(gtk) = self.gtk_watch.take() {
+            themes
+                .get_or_insert_with(|| self.custom_themes.clone())
+                .set_system(theme::system::GTK, gtk);
         }
-        let themes = theme::custom::load();
+        if self.theme_watch.take_changed() {
+            let mut files = theme::custom::load();
+            files.system = themes
+                .take()
+                .unwrap_or_else(|| self.custom_themes.clone())
+                .system;
+            themes = Some(files);
+        }
+        let Some(themes) = themes else {
+            return;
+        };
         if themes == self.custom_themes {
             return;
         }

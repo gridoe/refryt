@@ -293,11 +293,13 @@ fn appearance(app: &mut App, ui: &mut egui::Ui) {
     let dark = app.palette.dark;
     let mut dark_choice = app.settings.dark_theme.clone();
     let mut light_choice = app.settings.light_theme.clone();
-    let offered: Vec<&crate::theme::custom::CustomTheme> = app
-        .custom_themes
-        .themes
+    // The desktop's GTK and Qt themes first, in both modes: following the desktop means its
+    // colours whatever the mode. Then the files of this mode.
+    let system = crate::theme::system::GTK_AND_QT
         .iter()
-        .filter(|t| t.dark == dark)
+        .filter_map(|name| app.custom_themes.system_theme(name, dark));
+    let offered: Vec<&crate::theme::custom::CustomTheme> = system
+        .chain(app.custom_themes.themes.iter().filter(|t| t.dark == dark))
         .collect();
     let options: Vec<(egui::Color32, &str)> = offered
         .iter()
@@ -333,7 +335,11 @@ fn appearance(app: &mut App, ui: &mut egui::Ui) {
                 &options,
             ) {
                 let name = offered[i].name.clone();
-                if dark {
+                if crate::theme::system::is_system(&name) {
+                    // The desktop's theme stands for both modes.
+                    dark_choice = name.clone();
+                    light_choice = name;
+                } else if dark {
                     dark_choice = name;
                 } else {
                     light_choice = name;
