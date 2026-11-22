@@ -21,11 +21,13 @@
 </p>
 </details>
 
-refryt is a desktop client for YouTube Music, written in Rust. It doesn't embed a browser. Playback goes through mpv, and the app talks to YouTube through the same internal API the website uses.
+refryt is a native YouTube Music app for your desktop, written in Rust. There's no browser hiding inside it: music plays through mpv, and the app talks to YouTube the same way the website does. It opens fast and stays light.
 
-- Home, Explore, search, a library, synced lyrics, an editable queue and music videos.
-- 23 themes, with optional window transparency and background blur.
-- Memory use is typically between 100 and 300 MB, depending on the session.
+- Everything you'd expect: Home, Explore, search, your library, an editable queue and music videos.
+- Synced lyrics from seven sources, picked for you automatically, and romanised for Japanese, Korean and Chinese songs.
+- Your listening stats, with a page for every artist and song you play.
+- 29 themes, plus GTK and Qt on Linux to match your desktop, with optional transparency and background blur.
+- Usually 100 to 300 MB of memory, depending on what you're doing.
 - Packages for Linux (AppImage and Flatpak), Windows (installer, MSI and zip, plus an ARM64 build) and macOS (Apple Silicon DMG).
 
 ## Screenshots
@@ -84,7 +86,7 @@ refryt is a desktop client for YouTube Music, written in Rust. It doesn't embed 
 
 ## Install
 
-Downloads are on the [releases page](https://github.com/gridoe/refryt/releases), with a `SHA256SUMS` file to check them against.
+Grab the latest build from the [releases page](https://github.com/gridoe/refryt/releases). Each release has a `SHA256SUMS` file if you want to check your download.
 
 ### Linux
 
@@ -94,15 +96,15 @@ Downloads are on the [releases page](https://github.com/gridoe/refryt/releases),
 flatpak install --user https://gridoe.github.io/refryt/refryt.flatpakref
 ```
 
-Update it with `flatpak update`. The browser import and Launch on startup are not available inside the sandbox.
+`flatpak update` keeps it up to date. Inside the sandbox you'll miss two things: the browser import and Launch on startup.
 
-**AppImage:** download `refryt-<version>-x86_64.AppImage`, make it executable with `chmod +x` and run it.
+**AppImage:** download `refryt-<version>-x86_64.AppImage`, make it executable with `chmod +x`, and you're ready to go. You can also install via an AppImage manager such as Gear Lever or Shelly. Either way, it updates itself in one click when a new release is out.
 
-**AUR:** `refryt-bin` (the AppImage) or `refryt-git` (latest git, built from source), both unofficial (maintained by [9M2PJU](https://aur.archlinux.org/account/9M2PJU)), for example `yay -S refryt-bin`.
+**AUR:** on Arch, `yay -S refryt-bin` installs the AppImage, and `refryt-git` builds the latest code from source. Both are unofficial packages, kindly maintained by [9M2PJU](https://github.com/9M2PJU), and they may lag a little behind the latest release.
 
 ### Windows
 
-**Installer:** `refryt-<version>-windows-x86_64-setup.exe`, or the `.msi` for silent installs (`msiexec /i <file> /qn`). Both are unsigned, so SmartScreen warns on the first run.
+**Installer:** run `refryt-<version>-windows-x86_64-setup.exe`, or use the `.msi` for silent installs (`msiexec /i <file> /qn`). Both update themselves in one click when a new release is out. Neither is signed yet, so SmartScreen will warn you the first time; choose "More info", then "Run anyway".
 
 **Scoop**
 
@@ -111,9 +113,9 @@ scoop bucket add gridoe https://github.com/gridoe/scoop-bucket
 scoop install gridoe/refryt
 ```
 
-**Zip:** extract the whole folder and run `refryt.exe`.
+**Zip:** extract the whole folder and run `refryt.exe`. Nothing gets installed.
 
-The ARM64 `.msi` and `.zip` are native builds that have not been tested on ARM hardware.
+There are native ARM64 builds too (`.msi` and `.zip`). They haven't been tried on real ARM hardware yet, so feedback is very welcome.
 
 ### macOS
 
@@ -123,13 +125,13 @@ Apple Silicon only.
 
 **Disk image:** open `refryt-<version>-macos-arm64.dmg` and drag Refryt to Applications.
 
-The app is not notarised, so run `xattr -cr /Applications/Refryt.app` once before the first launch.
+The app isn't notarised by Apple, so macOS will refuse to open it at first. Run `xattr -cr /Applications/Refryt.app` once and it opens normally from then on.
 
 ### Updates
 
-refryt checks for a new release when it starts; the check can be turned off in Settings, About. The installer, the MSI and the AppImage update themselves with one click. The others show the command to run (`flatpak update`, `brew upgrade --cask refryt`, `scoop update refryt`) or a link to the release.
+refryt looks for a new release when it starts, and tells you when there is one (you can turn this off in Settings, About). The installer, the MSI and the AppImage update themselves in one click. For the others, it shows you the command to run (`flatpak update`, `brew upgrade --cask refryt`, `scoop update refryt`) or links to the release.
 
-To build from source, see [Build from source](#build-from-source).
+Prefer to build it yourself? See [Build from source](#build-from-source).
 
 ## Disclaimer
 
@@ -142,17 +144,19 @@ To build from source, see [Build from source](#build-from-source).
 
 ## Features
 
-- Search by songs, albums or artists, each asked from YouTube directly.
-- Playlists you can create, rename and reorder by dragging, with YouTube's suggestions on your own.
-- Liked songs marked everywhere, and a tile on each artist page with the ones you liked.
-- Home's sections in the order you choose.
-- A now-playing view with the cover, synced lyrics and a queue drawer (F to open, F11 to open it fullscreen, Esc to close).
-- Local folders, browsable like a file tree, and any folder as a playlist.
-- Downloads with Premium, to `~/Music/refryt` with tags and cover art, and an offline mode that points to them.
-- Audio quality, volume normalisation and autoplay when the queue runs out.
-- Brand account switching from the account menu.
-- Tray icon, start on boot, media keys, system media controls, and optional Discord Rich Presence.
-- Casting from the YouTube Music app on a phone, with the phone as the remote.
+- Search songs, albums or artists, straight from YouTube.
+- Make playlists, rename them and drag songs around, with YouTube's suggestions for your own playlists.
+- Your liked songs are marked everywhere, and each artist page has a tile with the ones you liked.
+- Put Home's sections in whatever order you like.
+- A now-playing view with the cover, synced lyrics and the queue (F opens it, F11 goes fullscreen, Esc closes it).
+- Lyrics from BetterLyrics, lrc.red, LRCLIB, KuGou, Unison and YouTube Music. You choose which to use and in what order, and can switch sources for any song.
+- Stats on what you listen to: top songs and artists, plays over time, and a page for every artist and song with your ranks, first plays and best days.
+- Your local music folders, browsable like a file tree, and any folder can be played as a playlist.
+- With Premium, download songs to `~/Music/refryt` with tags and cover art, and listen offline.
+- Audio quality, volume normalisation, and autoplay that keeps the music going when the queue ends.
+- Switch between brand accounts from the account menu.
+- Tray icon, start on boot, media keys, system media controls and optional Discord Rich Presence.
+- Cast from the YouTube Music app on your phone, and use the phone as the remote.
 - Resizable sidebars; the left one folds down to an icon rail.
 
 ## Using refryt
@@ -177,7 +181,7 @@ On macOS, Ctrl is Cmd. One click selects a song and two play it, as in Spotify; 
 
 ### Themes
 
-The 23 themes are CSS files in the config folder's `themes` folder, and can be edited or added ([docs/THEMES.md](docs/THEMES.md)). Settings has window transparency and background blur. Blur works on KDE Plasma under Wayland, compositors with ext-background-effect (niri, GNOME 51 and newer), Windows and macOS.
+There are 29 themes, and on Linux two more, GTK and Qt, that take their colours from your desktop. A fresh install starts on the one that matches your system. Every theme is a CSS file in the config folder's `themes` folder, so you can tweak them or make your own ([docs/THEMES.md](docs/THEMES.md)). Settings also has window transparency and background blur. Blur works on KDE Plasma under Wayland, compositors with ext-background-effect (niri, GNOME 51 and newer), Windows and macOS.
 
 ### Casting from a phone
 
@@ -195,19 +199,19 @@ If the computer doesn't show up in the phone's Cast menu, a firewall is usually 
 
 ### Signing in
 
-Sign in from the app's own window, or use Import from browser on Home or in Settings, which takes the session of the browser you used last. It knows Firefox and its forks, Chrome, Chromium, Brave, Vivaldi, Edge, Opera, Whale and Helium. On Windows, browsers that use app-bound cookie encryption are left out, and the Flatpak has only the app's window. Signed out, refryt still searches and plays.
+Sign in from the app's own window, or skip that and use Import from browser on Home or in Settings, which picks up the session from the browser you used last. It knows Firefox and its forks, Chrome, Chromium, Brave, Vivaldi, Edge, Opera, Whale and Helium. On Windows, browsers that use app-bound cookie encryption are left out, and the Flatpak has only the app's window. You don't have to sign in at all: signed out, refryt still searches and plays.
 
 ### Data and privacy
 
 Settings, themes, the session and the log live in `~/.config/refryt` on Linux, `~/Library/Application Support/refryt` on macOS and `~/.var/app/io.github.gridoe.refryt/config/refryt` in the Flatpak. The session is stored with owner-only permissions.
 
-There is no telemetry. refryt connects to YouTube and a few lyrics sites (BetterLyrics, lrc.red, LRCLIB, KuGou and Unison) for lyrics, GitHub for the update check, and Discord's local client if Rich Presence is on. Each lyrics source and the update check can be turned off in Settings. Crash reports stay on disk until you choose to copy or file them. [PRIVACY.md](PRIVACY.md) has the details.
+refryt has no telemetry. It connects to YouTube and a few lyrics sites (BetterLyrics, lrc.red, LRCLIB, KuGou and Unison) for lyrics, GitHub for the update check, and Discord's local client if Rich Presence is on. Each lyrics source and the update check can be turned off in Settings. Crash reports stay on disk until you choose to copy or file them. [PRIVACY.md](PRIVACY.md) has the details.
 
 ## Status
 
-The project is before 1.0 and changes quickly. Only the Linux builds see daily use; the Windows builds are cross-compiled with limited testing on real hardware, and the macOS build has been tested by hand. Podcasts are not supported. A change to YouTube's internal API can break playback or a page until a fix is released.
+refryt is young (it hasn't reached 1.0) and moves quickly. Linux is where it gets used every day. The Windows builds are cross-compiled and have had less testing on real hardware, and the macOS build has been tested by hand. Podcasts aren't supported. Now and then YouTube changes its internal API, which can break playback or a page until a fix is out.
 
-Bugs go to the [issue tracker](https://github.com/gridoe/refryt/issues); [CONTRIBUTING.md](CONTRIBUTING.md) says what to include.
+Found a bug? Please open an [issue](https://github.com/gridoe/refryt/issues); [CONTRIBUTING.md](CONTRIBUTING.md) says what helps. Reports from Windows and macOS are especially welcome.
 
 ## Build from source
 
