@@ -338,11 +338,11 @@ pub fn gtk_child() -> bool {
         // SAFETY: the probe was never shown and nothing else holds it.
         unsafe { probe.destroy() };
     }
+    // Written, not `println!`: if the app quit while GTK was starting, nobody is reading any
+    // more, and `println!` panics on the closed pipe.
+    use std::io::Write;
     match serde_json::to_string(&answer) {
-        Ok(line) => {
-            println!("{line}");
-            true
-        }
+        Ok(line) => writeln!(std::io::stdout(), "{line}").is_ok(),
         Err(_) => false,
     }
 }

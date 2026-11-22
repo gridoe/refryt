@@ -12,6 +12,20 @@ fn main() -> eframe::Result {
     // Before any other thread exists: how glibc treats freed memory (see `memory.rs`).
     refryt::memory::tune();
 
+    // The GTK colour lookup behind the "GTK" theme (`theme::system`): GTK cannot share the
+    // main thread with the app's window either, so it answers from a child of its own. Before
+    // the log and the crash hook: the helper isn't the app, and its failing (the app quit
+    // before it answered, or GTK fell over) must not leave a crash report behind as if the app
+    // had crashed. The app just goes without the GTK theme.
+    #[cfg(target_os = "linux")]
+    if std::env::args().any(|a| a == refryt::theme::system::GTK_ARG) {
+        std::process::exit(if refryt::theme::system::gtk_child() {
+            0
+        } else {
+            1
+        });
+    }
+
     // The Discord crate's one warning is "Discord isn't running", repeated on every retry while
     // Rich Presence is on: a third of a long log, saying nothing.
     refryt::init_tracing("warn,refryt=info,discord_rich_presence=error");
@@ -136,17 +150,6 @@ fn main() -> eframe::Result {
     let autostart = args.iter().any(|a| a == refryt::autostart::ARG);
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     let autostart = false;
-
-    // The GTK colour lookup behind the "GTK" theme (`theme::system`): GTK cannot share the
-    // main thread with the app's window either, so it answers from a child of its own.
-    #[cfg(target_os = "linux")]
-    if args.iter().any(|a| a == refryt::theme::system::GTK_ARG) {
-        std::process::exit(if refryt::theme::system::gtk_child() {
-            0
-        } else {
-            1
-        });
-    }
 
     // The child half of the in-app sign-in window: `webview_login::capture` starts this same
     // binary with `--sign-in-window <file>`, because tao's event loop cannot be created beside
