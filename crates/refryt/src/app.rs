@@ -1951,6 +1951,8 @@ pub struct App {
     /// macOS: the system's window buttons, kept in the shell's top-left corner. A no-op
     /// elsewhere.
     traffic_lights: crate::chrome::TrafficLights,
+    /// Turns macOS's native title-bar drag off over controls; see `chrome::NativeDrag`.
+    native_drag: crate::chrome::NativeDrag,
     /// Whether the sidebar was drawn folded to the icon rail last frame, for placing the traffic
     /// lights over it.
     pub(crate) sidebar_rail: bool,
@@ -2162,6 +2164,7 @@ impl App {
         #[cfg(target_os = "linux")]
         let activation = crate::activation::Activation::new(cc);
         let traffic_lights = crate::chrome::TrafficLights::new(cc);
+        let native_drag = crate::chrome::NativeDrag::new(cc, decorated);
         // Until the sidebar is first drawn (the splash comes first), from its saved width.
         let sidebar_rail = settings.sidebar_width.is_some_and(theme::sidebar_is_rail);
 
@@ -2425,6 +2428,7 @@ impl App {
             #[cfg(target_os = "linux")]
             activation,
             traffic_lights,
+            native_drag,
             sidebar_rail,
             traffic_lights_shown: false,
             media,
@@ -9019,6 +9023,7 @@ impl eframe::App for App {
         self.place_traffic_lights(fullscreen || player_fullscreen);
 
         chrome::paint_background(ui, &p, rounded);
+        self.native_drag.update(&ctx);
 
         // Ask KWin to blur what the transparency shows through. A no-op call every frame once
         // the size and state settle — `Blur::set` compares against what it last pushed and only

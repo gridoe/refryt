@@ -172,7 +172,13 @@ fn history_button(
 /// The search box as a pill with the magnifier inside it, rather than egui's default field.
 fn search_field(app: &mut App, ui: &mut Ui, width: f32) {
     let p = app.palette;
-    let (rect, response) = ui.allocate_exact_size(vec2(width, SEARCH_H), Sense::hover());
+    // The whole pill takes the press, not just the text row inside it: with hover only, a press
+    // on the padding or the magnifier fell through to the bar's drag surface underneath and
+    // moved the window. A click there focuses the field, as it would on the text itself.
+    let (rect, response) = ui.allocate_exact_size(vec2(width, SEARCH_H), Sense::click_and_drag());
+    if response.clicked() || response.drag_started() {
+        ui.memory_mut(|m| m.request_focus(search_id()));
+    }
     let focused = ui.memory(|m| m.has_focus(search_id()));
     let t = widgets::lit(ui, &response).max(if focused { 1.0 } else { 0.0 });
 
