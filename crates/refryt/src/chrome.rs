@@ -182,11 +182,13 @@ pub fn drag_surface(ui: &Ui, rect: Rect, decorated: bool, id_salt: &str) {
         return;
     }
     let ctx = ui.ctx().clone();
-    let drag = ui.interact(
-        rect,
-        egui::Id::new("ytm-titlebar-drag").with(id_salt),
-        Sense::click_and_drag(),
-    );
+    let id = egui::Id::new("ytm-titlebar-drag").with(id_salt);
+    // Remembered so [`NativeDrag`] can tell these surfaces from the controls drawn over them.
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<egui::IdSet>(drag_surfaces_id())
+            .insert(id);
+    });
+    let drag = ui.interact(rect, id, Sense::click_and_drag());
     if drag.drag_started() {
         ctx.send_viewport_cmd(ViewportCommand::StartDrag);
         hand_off_pointer();
@@ -204,6 +206,96 @@ pub fn drag_surface(ui: &Ui, rect: Rect, decorated: bool, id_salt: &str) {
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
     }
+}
+
+/// Where [`drag_surface`] keeps the ids of every surface it has drawn. They are stable, and
+/// there are only a handful, so the set is never cleared.
+fn drag_surfaces_id() -> egui::Id {
+    egui::Id::new("ytm-titlebar-drag-surfaces")
+}
+
+/// Keeps macOS's own title-bar drag off the controls drawn over it.
+///
+/// The macOS window keeps a native title bar, only hidden, with the content running under it
+/// (`main.rs`). AppKit still moves the window on a press anywhere in that hidden strip, before
+/// egui sees the event, so it ignores whatever egui drew there: drag-selecting text in the
+/// search box moved the window instead. Each frame this reads egui's hit test and lets the
+/// window be moved natively only where a press would land on nothing, or on one of
+/// [`drag_surface`]'s surfaces. Empty title-bar space drags as before; the controls get their
+/// presses.
+///
+/// A no-op on every other platform and with `--decorated`, where the title bar is the OS's own.
+#[derive(Default)]
+pub struct NativeDrag {
+    #[cfg(target_os = "macos")]
+    view: Option<objc2::rc::Retained<objc2_app_kit::NSView>>,
+    #[cfg(target_os = "macos")]
+    movable: Option<bool>,
+}
+
+impl NativeDrag {
+    pub fn new(handles: &impl raw_window_handle::HasWindowHandle, decorated: bool) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            use raw_window_handle::RawWindowHandle;
+            if decorated {
+                return Self::default();
+            }
+            let view = handles.window_handle().ok().and_then(|h| match h.as_raw() {
+                // SAFETY: eframe hands out the window's live content `NSView`, on the main
+                // thread, while the window exists.
+                RawWindowHandle::AppKit(handle) => unsafe {
+                    objc2::rc::Retained::retain(
+                        handle.ns_view.as_ptr().cast::<objc2_app_kit::NSView>(),
+                    )
+                },
+                _ => None,
+            });
+            Self {
+                view,
+                movable: None,
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (handles, decorated);
+            Self {}
+        }
+    }
+
+    /// Call once a frame. AppKit is only told when the answer changes.
+    pub fn update(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "macos")]
+        {
+            let Some(view) = &self.view else {
+                return;
+            };
+            let movable = native_drag_allowed(ctx);
+            if self.movable == Some(movable) {
+                return;
+            }
+            let Some(window) = view.window() else {
+                return;
+            };
+            window.setMovable(movable);
+            self.movable = Some(movable);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = ctx;
+    }
+}
+
+/// Whether a press under the pointer may move the window: no widget would take it, or only a
+/// title-bar drag surface would.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn native_drag_allowed(ctx: &egui::Context) -> bool {
+    let surfaces = ctx.data(|d| d.get_temp::<egui::IdSet>(drag_surfaces_id()));
+    ctx.viewport(|vp| {
+        [&vp.hits.click, &vp.hits.drag]
+            .into_iter()
+            .flatten()
+            .all(|w| surfaces.as_ref().is_some_and(|s| s.contains(&w.id)))
+    })
 }
 
 /// Minimise, maximise and close, for the current layout's leading edge.
